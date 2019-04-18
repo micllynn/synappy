@@ -1722,56 +1722,8 @@ def plot_statwrappers(stats_postsynaptic_events_1, stats_postsynaptic_events_2, 
 
 
 #---------TOOLS TO VISUALIZE SPONTANEOUS EVENTS-------#
-def plot_finds(wrap, neuron, trial, start, end,  deriv = False,  filt_size = 1501):
-    output_file("finds.html", title = 'Identified mEPSCs')
 
-    start_ind = np.int32(start * 5000)
-    end_ind = np.int32(end * 5000)
-
-    mask_for_ana = np.ones(len(wrap.analog_signals[neuron][trial,:]))
-    mask_for_ana_allfinds = np.ones(len(wrap.analog_signals[neuron][trial,:]))
-
-    mask_for_ana_allfinds[np.int32(wrap.stim_on[neuron][trial][:])] = 0
-    mask_for_ana[np.int32(wrap.height[neuron][trial, :, 1].compressed())] = 0
-
-    if deriv is False:
-        ana_masked = np.ma.array(wrap.analog_signals[neuron][trial,:], mask = mask_for_ana)
-        ana_verysmooth = sp.signal.savgol_filter(wrap.analog_signals[neuron][trial, :], filt_size, 4)
-
-        ana_allfinds_masked = np.ma.array(wrap.analog_signals[neuron][trial,:], mask = mask_for_ana_allfinds)
-
-
-    elif deriv is True:
-        ana_masked = np.ma.array(np.gradient(wrap.analog_signals[neuron][trial,:]), mask = mask_for_ana)
-        ana_verysmooth = sp.signal.savgol_filter(np.gradient(wrap.analog_signals[neuron][trial, :]), filt_size, 4)
-
-        ana_allfinds_masked = np.ma.array(np.gradient(wrap.analog_signals[neuron][trial,:]), mask = mask_for_ana_allfinds)
-
-    #fig = figure(x_axis_label = 'Index', y_axis_label = 'Current (pA)')
-    fig = plt.figure()
-
-    if deriv is False:
-
-        plt.plot(wrap.analog_signals[neuron][trial, start_ind:end_ind], color = [0.2, 0.3, 0.8], alpha = 0.5)
-        plt.plot(ana_masked[start_ind:end_ind], '.r', linewidth = 5, color = [0.8, 0.2, 0.2])
-        plt.plot(ana_allfinds_masked[start_ind:end_ind], '.r', linewidth = 5, color = [0.7, 0.5, 0.5], alpha = 0.3)
-
-        plt.plot(ana_verysmooth[start_ind:end_ind], color = [0, 0.3, 0], alpha = 0.8)
-
-
-    elif deriv is True:
-
-        plt.plot(np.gradient(wrap.analog_signals[neuron][trial, start_ind:end_ind]), color = [0.2, 0.2, 0.8], alpha = 0.5)
-        plt.plot(ana_masked[start_ind:end_ind], '.r', linewidth = 5, color = [0.8, 0.2, 0.2])
-        plt.plot(ana_allfinds_masked[start_ind:end_ind], '.r', linewidth = 5, color = [0.6, 0.2, 0.5], alpha = 0.3)
-
-        plt.plot(ana_verysmooth[start_ind:end_ind], color = [0, 0.4, 0], alpha = 0.8)
-
-    show(mpl.to_bokeh())
-    #mpld3.show(fig)
-    #mpld3.save_html(fig, 'figure')
-
-def plot_finds2(wrap, neuron, trial, start, end,  deriv = False):
+def plot_identified_events(wrap, neuron = 0, trial = 0, start = 0, end = 10,  deriv = False):
     start_ind = np.int32(start * 5000)
     end_ind = np.int32(end * 5000)
 
@@ -1797,13 +1749,15 @@ def plot_finds2(wrap, neuron, trial, start, end,  deriv = False):
         ana_allfinds_masked = np.ma.array(np.gradient(wrap.analog_signals[neuron][trial,:]), mask = mask_for_ana_allfinds)
 
     bokeh.io.curdoc().clear()
-    output_file("finds.html", title = 'Identified mEPSCs')
-    p = figure(title="Identified mEPSCs")#webgl = True)
+    output_file("identified_events.html", title = 'Identified mEPSCs')
+    p = figure(title="Identified mEPSCs",
+    plot_width = 1000, plot_height = 600)
 
     if deriv is False:
         full_signal = np.double(wrap.analog_signals[neuron][trial, start_ind:end_ind])
-        p.line(times, full_signal, line_width=0.5)
-        p.circle(times, ana_masked[start_ind:end_ind], color = "firebrick", size = 4)
+
+        p.line(times[0::10], full_signal[0::10], line_width=0.5)
+        p.circle(times, ana_masked, color = "firebrick", size = 4)
         #p.circle(times, ana_allfinds_masked[start_ind:end_ind], color = (0, 1, 0), size = 2)
 
 
@@ -1815,6 +1769,7 @@ def plot_finds2(wrap, neuron, trial, start, end,  deriv = False):
         plt.plot(ana_allfinds_masked[start_ind:end_ind], '.r', linewidth = 5, color = [0.6, 0.2, 0.5], alpha = 0.3)
 
         plt.plot(ana_verysmooth[start_ind:end_ind], color = [0, 0.4, 0], alpha = 0.8)
+
 
     show(p)
     #output_file("MPL_plot.html", title = "Identified events")
