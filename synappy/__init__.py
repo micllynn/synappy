@@ -3,34 +3,121 @@
 Created on Wed Mar 23 14:51:03 2016
 
 @author: michaellynn
-"" SynapPy is a rapid data visualization and quantification tool for single-cell electrophysiologists.
+""
 
 
-It takes .abf files as inputs, detects poststim synaptic events,
-and automatically computes a variety of statistics on them including:
+****SynapPy is a data analysis tool for patch-clamp synaptic physiologists who
+    work with .abf files and want to quickly quantify post-synaptic event
+    statistics and visualize the results over multiple trials or neurons.
+
+
+****Synappy works with either evoked or spontaneous events and includes a rapid
+    and Pythonic set of methods to add post-synaptic event statistics, including
+    amplitude, baseline, decay kinetics, rise-time, and release probability.
+****Synappy works with both current clamp and voltage clamp data, and can also
+    be used to analyze spike statistics and timing in current clamp
+****SynapPy additionally includes intelligent data visualization tools and
+    sophisticated data-quality vetting tools.
+
+#-------------------------------------------------------------------------------
+#A. AN INTRODUCTION TO SYNAPPY
+#-------------------------------------------------------------------------------
+
+###############
+1.
+###############
+*SynapPy first loads the files into an instance of a specialized class
+*containing the specified signal channels and the times as attributes:
+    .analog_signals
+        [neuron][trial, time_indices]
+    .stim_signals
+        [neuron][trial, time_indices]
+    .times
+        [neuron][times]
+
+###############
+2.
+###############
+*Through the .add_stim_on() method, one can then add either evoked
+*(event_type = 'stim') or spontaneous (event_type = 'spontaneous') events into
+*the .stim_on attribute:
+    .stim_on
+        [neuron][trial][stim_indices]
+
+
+###############
+3.
+###############
+*For each event, one can then add a variety of post-synaptic event statistics.
+*These are added through the .add_all() method, or through individual methods
+*for more granuarity (e.g. .add_ampli(), .add_latency(); a.dd_decays()).
+*The postsynaptic event statistics are automatically stored in attributes which
+*can be accessed at a later time:
+
+    -----------
     .height
-    .height_norm
-    .latency             [by max_height, max_slope, 80_20_line (calcuate epsp foot)]
-    .decay
+    -----------
+    #Stores baseline-subtracted peak amplitude of PSP
+
+    [neuron][trial, stim, [height_params]
+        where [height_params] = [ampli, ampli_ind,
+                time_of_max_ampli_from_stim, ???]]
+    -----------
     .baseline
-    .failure rate
+    -----------
+    #Stores values for baseline signal
+
+    [neuron][trial, stim, [baseline_params]]
+	    where [baseline_params] = [mean_baseline, stdev_baseline]
+
+    -----------
+    .latency
+    -----------
+    #Stores latency from stimulus onset to foot of PSP
+
+    [neuron][trial, stim, [latency_params]]
+        where [latency_params] = [latency_sec, ind_latency_sec]
+
+    -----------
+    .height_norm
+    -----------
+    #Stores baseline-subtracted peak ampli normalized to 1 within a cell
+
+    [neuron][trial, stim, [height_params]
+        where [height_params] = [normalized_ampli, norm_ampli_ind,
+            time_of_max_ampli_from_stim, ??]]
+
+    -----------
+    .decay
+    -----------
+    #Stores statistics for the decay tau of PSP
+
+    [neuron][trial, stim, [tau_params]]
+	    where [tau_params] = [tau, baseline_offset]
 
 
-The raw values are stored as attributes in the synwrapper object
-(eg event_stats.height_norm[neuron] gives arrays of norm heights for each [neuron])
+###############
+4.
+###############
+*By default, SynapPy intelligently filters out data if events are not above 4*SD(baseline),
+*or if their decay constant (tau) is nonsensical. These events are masked but kept
+*in the underlying data structure, providing a powerful tool to both analyze
+*release probability/failure rate, or alternatively spike probability.
 
 
-It also intelligently filters out bad data if events are not above 4*SD(baseline),
-or if their decay constant (tau) is nonsensical. These events are masked but kept
-in the underlying data structure.
-
-
-The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommended)
+*The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommended)
 
 
 
+#-------------------------------------------------------------------------------
+#B. TYPICAL COMMANDS AND THEIR USAGE, AND AN EXAMPLE PIPELINE
+#-------------------------------------------------------------------------------
 
----Typical usage---:
+###############
+1.
+###############
+*Load files, add event statistics, and recover these statistics for further
+*analysis
 
     import synappy as syn
 
@@ -53,9 +140,10 @@ The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommende
             #fetch normalized height stats for that neuron. dim0 = trials, dim1 = stims.
             #The raw data behind each attribute can be fetched this way.
 
-
-
----Plotting tools---:
+###############
+2.
+###############
+*Plot event statistics with useful built-in plotting tools
 
     event1.plot('height')
 
@@ -82,8 +170,12 @@ The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommende
 
 
 
----Useful built-in general functions---:
+###############
+3.
+###############
+*Built-in functions and methods
 
+----Useful functions built into SynapPy package----
     syn.pool(event_1.attribute)
 
         #Pools this attribute over [stims, :]
@@ -96,7 +188,7 @@ The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommende
         #eg if byneuron = True, out[neuron, 3] would give sterr for that neuron, calculated by pooling across all trials/stims.
 
 
----Useful methods on the synwrapper class---:
+---Useful methods which are part of the synwrapper class---:
     synwrapper.propagate_mask(): propagate synwrapper.mask through to all other attributes.
     synwrapper.add_ampli() adds .height and .latency
     synwrapper.add_sorting() adds .mask and sorts [.height, .latency]
@@ -108,18 +200,6 @@ The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommende
 
     synwrapper.add_all() is a general tool to load all stats.
 
-
-
-
-~~~~~~~Data filtering and manipulation~~~~~~
-
-Data is automatically filtered in two ways:
-    1) height for each event must be above 4*std(baseline) for that trial.
-    2) decays must not be nonsensical (tau > 0, tau not far larger than rest of set)
-        - This decay-based mask update can be turned off during synwrapper.add_decay()
-
-    Success/fail filter is stored in a global synwrapper.mask attribute
-    that can be propagated to all other attributes via the synwrapper.propagate_mask() method.
 
 """
 
@@ -262,7 +342,6 @@ class synwrapper(object):
                     postsynaptic_event[neuron][trial, stim, 0] -=  baseline[neuron][trial, stim, 0]      #correct EPSP val by subtracting baseline measurement
                     #store time of max_height latency in [stim,2]
                     postsynaptic_event[neuron][trial, stim, 2] =  times[neuron][np.int32(postsynaptic_event[neuron][trial][stim,1])] - times[neuron][np.int32(stim_on[neuron][trial][stim])]
-
 
                     ##------Calculate event onset latencies-----#
                     max_height_smoothed_ind = np.int32(postsynaptic_event[neuron][trial,stim,1] - PSE_search_lower_thistrial)
@@ -685,6 +764,9 @@ class synwrapper(object):
 
 
     def add_decays(self, prestim = 0, poststim = 10, plotting = False, fn = 'monoexp_normalized_plusb', update_mask = False):
+        '''
+
+        '''
 
         ##------SETUP------#
         #Import variables from synappy wrapper
@@ -1325,24 +1407,6 @@ def find_spontaneous(analog_signals, filt_size = 501, thresh_ampli = 3, thresh_d
             trial_analog = sp.signal.savgol_filter(analog_signals[neuron][trial, :], filt_size, savgol_polynomial)
             trial_gradient = np.gradient(trial_analog)
 
-            # mini_onset = np.where((trial_gradient < thresh_deriv))[0]
-            # mini_offset = np.where((trial_gradient > thresh_deriv_pos))[0]
-            #
-            # stim_on[neuron][trial][0] = mini_onset[0]
-            #
-            # for crossing_ind in np.arange(1,len(mini_onset)):
-            #     if mini_onset[crossing_ind-1] != mini_onset[crossing_ind] - 1:
-            #         stim_on[neuron][trial] = np.append(stim_on[neuron][trial], mini_onset[crossing_ind])
-            #
-            # stim_on[neuron][trial] -= 25
-            #
-            # to_delete_low = np.where(stim_on[neuron][trial] < 1600)
-            # stim_on[neuron][trial] = np.delete(stim_on[neuron][trial], to_delete_low)
-            #
-            # to_delete_high = np.where(stim_on[neuron][trial] > len(analog_signals[0][0]) - 251)
-            # stim_on[neuron][trial] = np.delete(stim_on[neuron][trial], to_delete_high)
-
-
             #Create shifted array
             deriv_lessthan = np.where(trial_gradient < thresh_deriv)[0]
             deriv_lessthan_shifted = np.roll(deriv_lessthan, shift = 1)
@@ -1364,8 +1428,11 @@ def find_spontaneous(analog_signals, filt_size = 501, thresh_ampli = 3, thresh_d
                 #First, determine whether we are outside of an 'event' and update
                 #current_event_finish accordingly
                 if event > current_event_finish:
-                    current_event_finish_ind = np.where(event_end > event)[0][0]
-                    current_event_finish = event_end[current_event_finish_ind]
+                    try:
+                        current_event_finish_ind = np.where(event_end > event)[0][0]
+                        current_event_finish = event_end[current_event_finish_ind]
+                    except:
+                        current_event_finish = event_end[current_event_finish_ind]
 
                 #Determine if the next event_start also falls before the next event_end. If so,
                 #more than one event_start is being detected per actual event, so mask the
