@@ -1,155 +1,191 @@
-# synappy
+#synappy
 
-SynapPy is a rapid data visualization and quantification tool for single-cell electrophysiologists.
+**SynapPy is a data analysis tool for patch-clamp synaptic physiologists who work with .abf files and want to quickly quantify post-synaptic event statistics and visualize the results over multiple trials or neurons.
 
-Its main purpose is to read raw data from .abf files, resolve postsynaptic events from noise, and perform quantification on these events.
+**Synappy works with either evoked or spontaneous events and includes a rapid and Pythonic set of methods to add post-synaptic event statistics, including amplitude, baseline, decay kinetics, rise-time, and release probability.
 
-Postsynaptic events can either be evoked or spontaneous - the module has ways of detecting both kinds. For evoked events (either optically or electrically triggered), the module uses the TTL pulse of a stim channel. For spontaneous or miniature postsynaptic events, the module uses an algorithm based on 1) first-derivative thresholding of rising slope; 2) filtering false positives based on amplitude and decay fits; and 3) tuning of false positive/false negative balance through an intuitive spontaneous event visualization tool based on bokeh plotting, and adjustable detection parameters.
+**Synappy works with both current clamp and voltage clamp data, and both excitatory and inhibitory responses. It can also be used to analyze spike statistics and timing in current clamp. All that is needed is to specify the 'direction' (up or down) of the post-synaptic event, and to tune the time-window in which to look for a responses.
 
-Once Synappy finds the postsynaptic event times, it also conveniently computes variety of statistics on these events:
-    .height             (amplitude from baseline)
-    .height_norm        (normalized amplitude from baseline)
-    .latency             (A variety of methods: max_height, max_slope, 80_20_line (calcuate epsp foot))
-    .decay              (monoexponential or biexponential fits)
+**SynapPy additionally includes intelligent data visualization tools and sophisticated data-quality vetting tools.
+
+#-------------------------------------------------------------------------------
+#A. AN INTRODUCTION TO SYNAPPY
+#-------------------------------------------------------------------------------
+
+###############
+1.
+###############
+*SynapPy first loads the files into an instance of a specialized class
+*containing the specified signal channels and the times as attributes:
+    .analog_signals
+        [neuron][trial, time_indices]
+    .stim_signals
+        [neuron][trial, time_indices]
+    .times
+        [neuron][times]
+
+###############
+2.
+###############
+*Through the .add_stim_on() method, one can then add either evoked
+*(event_type = 'stim') or spontaneous (event_type = 'spontaneous') events into
+*the .stim_on attribute:
+    .stim_on
+        [neuron][trial][stim_indices]
+
+
+###############
+3.
+###############
+*For each event, one can then add a variety of post-synaptic event statistics.
+*These are added through the .add_all() method, or through individual methods
+*for more granuarity (e.g. .add_ampli(), .add_latency(); a.dd_decays()).
+*The postsynaptic event statistics are automatically stored in attributes which
+*can be accessed at a later time:
+
+    -----------
+    .height
+    -----------
+    #Stores baseline-subtracted peak amplitude of PSP
+
+    [neuron][trial, stim, [height_params]
+        where [height_params] = [ampli, ampli_ind,
+                time_of_max_ampli_from_stim, ???]]
+    -----------
     .baseline
-    .failure rate   
+    -----------
+    #Stores values for baseline signal
 
-        
-A key convenience factor here is the definition of a custom python object class (synwrapper, for synaptic wrapper) which stores the complete set of data associated with a set of files: analog signals, event times, and all the statistical quantification described above. The synwrapper class also provides a number of built-in methods to both visualize and extend the data.
+    [neuron][trial, stim, [baseline_params]]
+	    where [baseline_params] = [mean_baseline, stdev_baseline]
 
-Retrieving data for processing:
-event1.height_norm[neuron] gives arrays of normalized heights for each [neuron]).
-event.height_norm[neuron][trial, stim] is the total data structure.
+    -----------
+    .latency
+    -----------
+    #Stores latency from stimulus onset to foot of PSP
 
-    
-It also intelligently filters out bad data if events are not above 4*SD(baseline),
-or if their decay constant (tau) is nonsensical. These events are masked but kept 
-in the underlying data structure.
+    [neuron][trial, stim, [latency_params]]
+        where [latency_params] = [latency_sec, ind_latency_sec]
+
+    -----------
+    .height_norm
+    -----------
+    #Stores baseline-subtracted peak ampli normalized to 1 within a cell
+
+    [neuron][trial, stim, [height_params]
+        where [height_params] = [normalized_ampli, norm_ampli_ind,
+            time_of_max_ampli_from_stim, ??]]
+
+    -----------
+    .decay
+    -----------
+    #Stores statistics for the decay tau of PSP
+
+    [neuron][trial, stim, [tau_params]]
+	    where [tau_params] = [tau, baseline_offset]
 
 
-The main dependencies are: numpy, scipy, matplotlib, bokeh and neo (ver 0.4+ recommended)
+###############
+4.
+###############
+*By default, SynapPy intelligently filters out data if events are not above 4*SD(baseline),
+*or if their decay constant (tau) is nonsensical. These events are masked but kept
+*in the underlying data structure, providing a powerful tool to both analyze
+*release probability/failure rate, or alternatively spike probability.
+
+
+*The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommended)
 
 
 
+#-------------------------------------------------------------------------------
+#B. TYPICAL COMMANDS AND THEIR USAGE, AND AN EXAMPLE PIPELINE
+#-------------------------------------------------------------------------------
 
-#################
-EXAMPLES OF USAGE:
-#################
+###############
+1.
+###############
+*Load files, add event statistics, and recover these statistics for further
+*analysis
 
     import synappy as syn
 
-    #----Load data----#
-    event1 = syn.load(['15d20004.abf', '15d20007.abf', '15d20020.abf'], trials = [[0, 1], [1, 2], [2, 3]], input_channel = [0, 
-    0, 0], stim_channel = [2, 2, 2])
-     
-            #Here, we define a list of files to load. We can also define a particular number of trials for each neuron      
-            #(optional), and input channels and stim_channels (also optional, defaulting to first and last respectively).
-     
-    #----Detect postsynaptic event times----#
-    
-    #### 1. Add spontaneous events #####
-    
-    add_events(event1, event_type = 'spontaneous', spont_filtsize = 25, spont_threshampli = 3, spont_threshderiv = -1.2, 
-    savgol_polynomial = 3)
-    
-            #Add spontaneous events to event1, as event1.stim_on.
-            #Event detection based on first-derivative thresholding of analog channel, with optional parameters of 
-            #spont_filtsize (a savitsky-golay filter applied to analog_signals before derivative is taken); spont_threshampli 
-            #(amplitude threshold for events), and spont_threshderiv (derivative threshold for events)
-            
-            
-    #### 2. Add evoked events #####
-    
-    add_events(event1, event_type = 'stim', stim_thresh = 2)
-            
-            #Add evoked events to event1, as event1.stim_on.
-            #Event detection based on simple thresholding of stim channel. Optional parameter is stim_thresh, which is the 
-            #thresholding of the TTL channel (which should either be 0, upon no stim, or 5, upon stim).
+    event1 = syn.load(['15d20004.abf', '15d20007.abf', '15d20020.abf'])
 
-    #----Add statistical quantification of postsynaptic events----#
-    
-    event1.add_all(event_direction = 'down', latency_method = 'max_height')
-    
-            #Add .height, .baseline, .latency, .height_norm, .decay to event1. Options are event_direction ('up' for IPSCs or 
-            #EPSPs; 'down' for EPSCs or IPSPs) and latency_method (more description in script, but this corresponds to the 
-            #method for detecting postsynaptic event latency, from the stim_on time - eg for discriminating between 
-            #monosynaptic and polysynaptic events.
-    
-    #----Fetch data----#
+            #Give a list of filenames as first argument
+            #can also specify trial ranges [default:all], input channels [default:first]
+            #stim channels [default:last] and a downsampling ratio for analog signals [default:2]
+            #(this last property to help with rapid analysis)
+
+
+    event1.add_all(event_direction = 'down', latency_method = 'max_slope')
+
+            #automatically adds all relevant stats. Many options here to change stat properties.
+            #Note: includes filtering out of unclamped aps; and filtering out of events with nonsensical decay
+
+
     event1.height_norm[neuron]
-    
+
             #fetch normalized height stats for that neuron. dim0 = trials, dim1 = stims.
             #The raw data behind each attribute can be fetched this way.
 
+###############
+2.
+###############
+*Plot event statistics with useful built-in plotting tools
 
-##############################
-PLOTTING AND VISUALIZATION TOOLS
-##############################
+    event1.plot('height')
 
-    syn.plot_finds(event1, neuron, trial, starttime, endtime)
-            #Plots the detected spontaneous events using the bokeh plotting tool, which generates an interactive html-based 
-            #plot overlaying analog signals with detected event amplitudes (red dots)
-
-    event1.plot('height')  
-    
-            #main data visualization tool. Plots event attribute.  
+            #main data visualization tool. Plots event attribute.
             #Makes a separate figure for each neuron, then plots stim_num on x-axis and attribute on y-axis.
             #plots are color-coded (blue are early trials, red are late trials, grey are fails)
-    
-    
+
+
     event1.plot_corr('height, 'decay')
-    
+
             #plots correlation between two attributes within event1.
             #same format/coloring as event1.plot.
-    
-    
+
+
     syn.plot_events(event1.attribute, event2.attribute)
-    
+
             #compare attributes from two data groups (different conditions, cell types, etc.)
-    
-    
+
+
     syn.plot_statwrappers(stat1, stat2, ind = 0, err_ind = 2)
-    
+
             #compare statfiles on two events, and can also give dim1indices of statfiles to plot.
             #eg to plot means +-sterr, syn.plot_statwrappers(stat1, stat2, ind = 0, err_ind = 2)
-    
 
 
----Useful built-in general functions---:
 
+###############
+3.
+###############
+*Built-in functions and methods
+
+----Useful functions built into SynapPy package----
     syn.pool(event_1.attribute)
-    
-        #Pools this attribute over all neurons and trials and outputs out[stims, :]
-    
-    
+
+        #Pools this attribute over [stims, :]
+
+
     syn.get_stats(event_1.attribute, byneuron = False)
-    
+
         #Gets statistics for this attribute over stimtrain (out[stim,:]) or neuron if byneuron is True (out[neuron,:])
         #dim2: 1->mean, 2->std, 3->sterr, 4->success_rate_mean, 5->success_rate_stdev
         #eg if byneuron = True, out[neuron, 3] would give sterr for that neuron, calculated by pooling across all trials/stims.
-    
-#############################################
-USEFUL METHODS ON THE SYNWRAPPER CLASS
-#############################################
 
-    synwrapper.propagate_mask(): #propagate synwrapper.mask through to all other attributes.
-    synwrapper.add_heights() #adds .height and .latency
-    synwrapper.add_sorting() #adds .mask and sorts [.height, .latency]
-    synwrapper.add_invertedsort() #adds .height_fails
-    synwrapper.add_normalized() #adds .height_norm
-    synwrapper.add_decay() #adds .decay
-    synwrapper.remove_unclamped_aps() #identifies events higher than 5x (default) amp.
+
+---Useful methods which are part of the synwrapper class---:
+    synwrapper.propagate_mask(): propagate synwrapper.mask through to all other attributes.
+    synwrapper.add_ampli() adds .height and .latency
+    synwrapper.add_sorting() adds .mask and sorts [.height, .latency]
+    synwrapper.add_invertedsort() adds .height_fails
+    synwrapper.add_normalized() adds .height_norm
+    synwrapper.add_decay() adds .decay
+    synwrapper.remove_unclamped_aps() identifies events higher than 5x (default) amp.
                                     It updates the .mask with this information, and then .propagate_mask()
-    
+
     synwrapper.add_all() is a general tool to load all stats.
-   
-   
-   
-   Data is automatically filtered in two ways:
-    1) height for each event must be above 4*std(baseline) for that trial.
-    2) decays must not be nonsensical (tau > 0, tau not way larger than rest of set)
-        - This decay-based mask update can be turned off during synwrapper.add_decay()
-    
-    The Success/fail filter is stored in a global synwrapper.mask attribute 
-    that can be propagated to all other attributes via the synwrapper.propagate_mask() method.
 
