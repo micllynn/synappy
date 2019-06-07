@@ -32,46 +32,37 @@ Through the .add_stim_on() method, one can then add either evoked (event_type = 
 ### Adding post-synaptic event statistics
 For each event, one can then add a variety of post-synaptic event statistics. These are added through the .add_all() method, or through individual methods for more granuarity (e.g. .add_ampli(), .add_latency(); a.dd_decays()). The postsynaptic event statistics are automatically stored in attributes which can be accessed at a later time:
 
-    -----------
-    .height
-    -----------
+    #---------------
+    .height[neuron][trial, stim, [height_params]]
+    
     #Stores baseline-subtracted peak amplitude of PSP
+    #[height_params] = [ampli, ampli_ind,
+        time_of_max_ampli_from_stim, first_deriv]]
 
-    [neuron][trial, stim, [height_params]
-        where [height_params] = [ampli, ampli_ind,
-                time_of_max_ampli_from_stim, ???]]
-    -----------
-    .baseline
-    -----------
+    #---------------
+    .baseline[neuron][trial, stim, [baseline_params]]
+
     #Stores values for baseline signal
+    #[baseline_params] = [mean_baseline, stdev_baseline]
 
-    [neuron][trial, stim, [baseline_params]]
-	    where [baseline_params] = [mean_baseline, stdev_baseline]
+    #---------------
+    .latency[neuron][trial, stim, [latency_params]]
 
-    -----------
-    .latency
-    -----------
     #Stores latency from stimulus onset to foot of PSP
+    #[latency_params] = [latency_sec, ind_latency_sec]
 
-    [neuron][trial, stim, [latency_params]]
-        where [latency_params] = [latency_sec, ind_latency_sec]
+    #---------------
+    .height_norm[neuron][trial, stim, [height_params]]
 
-    -----------
-    .height_norm
-    -----------
     #Stores baseline-subtracted peak ampli normalized to 1 within a cell
+    #[height_params] = [normalized_ampli, norm_ampli_ind,
+            time_of_max_ampli_from_stim, first_deriv]]
 
-    [neuron][trial, stim, [height_params]
-        where [height_params] = [normalized_ampli, norm_ampli_ind,
-            time_of_max_ampli_from_stim, ??]]
+    #---------------
+    .decay[neuron][trial, stim, [tau_params]]
 
-    -----------
-    .decay
-    -----------
     #Stores statistics for the decay tau of PSP
-
-    [neuron][trial, stim, [tau_params]]
-	    where [tau_params] = [tau, baseline_offset]
+    #[tau_params] = [tau, baseline_offset]
 
 
 ### Data quality and further analysis
