@@ -1,22 +1,21 @@
-#synappy
+# SynapPy: Synaptic physiology in Python
 
-**SynapPy is a data analysis tool for patch-clamp synaptic physiologists who work with .abf files and want to quickly quantify post-synaptic event statistics and visualize the results over multiple trials or neurons.
+SynapPy is a data analysis tool for patch-clamp synaptic physiologists who work with .abf files and want to quickly quantify post-synaptic event statistics and visualize the results over multiple trials or neurons.
 
-**Synappy works with either evoked or spontaneous events and includes a rapid and Pythonic set of methods to add post-synaptic event statistics, including amplitude, baseline, decay kinetics, rise-time, and release probability.
+Synappy works with either evoked or spontaneous events and includes a rapid and Pythonic set of methods to add post-synaptic event statistics, including amplitude, baseline, decay kinetics, rise-time, and release probability.
 
-**Synappy works with both current clamp and voltage clamp data, and both excitatory and inhibitory responses. It can also be used to analyze spike statistics and timing in current clamp. All that is needed is to specify the 'direction' (up or down) of the post-synaptic event, and to tune the time-window in which to look for a responses.
+Synappy works with both current clamp and voltage clamp data, and both excitatory and inhibitory responses. It can also be used to analyze spike statistics and timing in current clamp. All that is needed is to specify the 'direction' (up or down) of the post-synaptic event, and to tune the time-window in which to look for a responses.
 
-**SynapPy additionally includes intelligent data visualization tools and sophisticated data-quality vetting tools.
+SynapPy additionally includes intelligent data visualization tools and sophisticated data-quality vetting tools.
 
-#-------------------------------------------------------------------------------
-#A. AN INTRODUCTION TO SYNAPPY
-#-------------------------------------------------------------------------------
 
-###############
-1.
-###############
-*SynapPy first loads the files into an instance of a specialized class
-*containing the specified signal channels and the times as attributes:
+## Getting Started
+
+### Prerequisites
+The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommended)
+
+### Loading data
+SynapPy first loads the files into an instance of a specialized class containing the specified signal channels and the times as attributes:
     .analog_signals
         [neuron][trial, time_indices]
     .stim_signals
@@ -24,24 +23,14 @@
     .times
         [neuron][times]
 
-###############
-2.
-###############
-*Through the .add_stim_on() method, one can then add either evoked
-*(event_type = 'stim') or spontaneous (event_type = 'spontaneous') events into
-*the .stim_on attribute:
+### Adding stimulus onsets
+Through the .add_stim_on() method, one can then add either evoked (event_type = 'stim') or spontaneous (event_type = 'spontaneous') events into the .stim_on attribute:
     .stim_on
         [neuron][trial][stim_indices]
 
 
-###############
-3.
-###############
-*For each event, one can then add a variety of post-synaptic event statistics.
-*These are added through the .add_all() method, or through individual methods
-*for more granuarity (e.g. .add_ampli(), .add_latency(); a.dd_decays()).
-*The postsynaptic event statistics are automatically stored in attributes which
-*can be accessed at a later time:
+### Adding post-synaptic event statistics
+For each event, one can then add a variety of post-synaptic event statistics. These are added through the .add_all() method, or through individual methods for more granuarity (e.g. .add_ampli(), .add_latency(); a.dd_decays()). The postsynaptic event statistics are automatically stored in attributes which can be accessed at a later time:
 
     -----------
     .height
@@ -85,28 +74,16 @@
 	    where [tau_params] = [tau, baseline_offset]
 
 
-###############
-4.
-###############
-*By default, SynapPy intelligently filters out data if events are not above 4*SD(baseline),
-*or if their decay constant (tau) is nonsensical. These events are masked but kept
-*in the underlying data structure, providing a powerful tool to both analyze
-*release probability/failure rate, or alternatively spike probability.
-
-
-*The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommended)
+### Data quality and further analysis
+By default, SynapPy intelligently filters out data if events are not above 4*SD(baseline), or if their decay constant (tau) is nonsensical. These events are masked but kept in the underlying data structure, providing a powerful tool to both analyze release probability/failure rate, or alternatively spike probability.
 
 
 
-#-------------------------------------------------------------------------------
-#B. TYPICAL COMMANDS AND THEIR USAGE, AND AN EXAMPLE PIPELINE
-#-------------------------------------------------------------------------------
+## An analysis pipeline including commands and their usage
 
-###############
-1.
-###############
-*Load files, add event statistics, and recover these statistics for further
-*analysis
+    ###########
+    #Load files, add event statistics, and recover these statistics for further analysis
+    ###########
 
     import synappy as syn
 
@@ -129,10 +106,9 @@
             #fetch normalized height stats for that neuron. dim0 = trials, dim1 = stims.
             #The raw data behind each attribute can be fetched this way.
 
-###############
-2.
-###############
-*Plot event statistics with useful built-in plotting tools
+    ##########
+    #Plot event statistics with useful built-in plotting tools
+    ##########
 
     event1.plot('height')
 
@@ -159,12 +135,9 @@
 
 
 
-###############
-3.
-###############
-*Built-in functions and methods
+## Other built-in functions and methods
 
-----Useful functions built into SynapPy package----
+### Useful functions built into SynapPy package
     syn.pool(event_1.attribute)
 
         #Pools this attribute over [stims, :]
@@ -177,7 +150,7 @@
         #eg if byneuron = True, out[neuron, 3] would give sterr for that neuron, calculated by pooling across all trials/stims.
 
 
----Useful methods which are part of the synwrapper class---:
+### Useful methods which are part of the synwrapper class
     synwrapper.propagate_mask(): propagate synwrapper.mask through to all other attributes.
     synwrapper.add_ampli() adds .height and .latency
     synwrapper.add_sorting() adds .mask and sorts [.height, .latency]
