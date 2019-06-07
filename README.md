@@ -34,33 +34,33 @@ For each event, one can then add a variety of post-synaptic event statistics. Th
 
     #---------------
     .height[neuron][trial, stim, [height_params]]
-    
+    #---------------
     #Stores baseline-subtracted peak amplitude of PSP
     #[height_params] = [ampli, ampli_ind,
         time_of_max_ampli_from_stim, first_deriv]]
 
     #---------------
     .baseline[neuron][trial, stim, [baseline_params]]
-
+    #---------------
     #Stores values for baseline signal
     #[baseline_params] = [mean_baseline, stdev_baseline]
 
     #---------------
     .latency[neuron][trial, stim, [latency_params]]
-
+    #---------------
     #Stores latency from stimulus onset to foot of PSP
     #[latency_params] = [latency_sec, ind_latency_sec]
 
     #---------------
     .height_norm[neuron][trial, stim, [height_params]]
-
+    #---------------
     #Stores baseline-subtracted peak ampli normalized to 1 within a cell
     #[height_params] = [normalized_ampli, norm_ampli_ind,
             time_of_max_ampli_from_stim, first_deriv]]
 
     #---------------
     .decay[neuron][trial, stim, [tau_params]]
-
+    #---------------
     #Stores statistics for the decay tau of PSP
     #[tau_params] = [tau, baseline_offset]
 
