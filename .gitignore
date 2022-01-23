@@ -1,5 +1,4 @@
-.DS_Store
-*.pdf
-test.py
-/__pycache__
-/figs
+*
+!setup.py
+!README.md
+!/synappy/*
