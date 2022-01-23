@@ -1,0 +1,9 @@
+README.md
+setup.py
+synappy/__init__.py
+synappy.egg-info/PKG-INFO
+synappy.egg-info/SOURCES.txt
+synappy.egg-info/dependency_links.txt
+synappy.egg-info/not-zip-safe
+synappy.egg-info/requires.txt
+synappy.egg-info/top_level.txt
