@@ -1,202 +1,254 @@
 # imports
-from .load import load
+from .load import load_all_channels
 import numpy as np
 import scipy as sp
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gs
+from matplotlib.widgets import Button
+import matplotlib.style as mplstyle
+
 from types import SimpleNamespace
 
 from bokeh.plotting import figure, output_file, show
 import bokeh
 
 
-def visualize(filename, input_channel=0, input_channel2=1,
-              stim_channel=2, stim_channel2=None,
-              plot_mean=True,
-              plot_separate_trials=False):
-    """Simple function to visualize individual physiological recordings.
+class preview(object):
 
-    Analog signals for up to two input channels and two stim channels
-    are plotted. By default, all trial traces are plotted in the same plot
-    in light grey lines, while a mean trace is plotted in black.
+    def __init__(self, filename,
+                 plot_mean=False,
+                 plot_separate_trials=False,
+                 _color_reg=[0.65, 0.65, 0.65],
+                 _color_bold=[0.0118, 0.443, 0.612],
+                 _color_mean=[0.980, 0.259, 0.141],
+                 _subsampling=5):
+        """Simple class to preview individual physiological recordings.
 
-    Optionally, each trial can be plotted in a separate figure
-    (plot_separate_trials).
+        Analog signals for up to two input channels and two stim channels
+        are plotted. By default, all trial traces are plotted in the same plot
+        in light grey lines, while a mean trace is plotted in black.
 
-    Parameters
-    ------------
-    filename : str
-        The filename to visualize. Must be in same folder.
+        Optionally, each trial can be plotted in a separate figure
+        (plot_separate_trials).
 
-    input_channel : int
-        Index of the primary input channel to visualize.
-        - The default value of 0 typically gives voltage in current-clamp,
-          and current in voltage-clamp.
+        Parameters
+        ------------
+        filename : str
+            The filename to visualize. Must be in same folder.
 
-    input_channel2 : int
-        Index of the secondary input channel to visualize.
-        - The default value of 1 typically gives current in current-clamp,
-          and voltage in voltage-clamp.
+        plot_mean : bool
+            If True, plots a trial-averaged trace in black on top of the
+            individual trial traces.
 
-    stim_channel : int or None
-        Index of the first stim channel to visualize.
-        - The default value of 2 typically gives the first stim channel
-          (non-input-channel).
-        - Use None to deactivate
+        plot_separate_trials : bool
+            If True, plots all trials as separate figures with the trial
+            number listed.
+        """
+        # Load data and initialize variables
+        self.fname = filename
+        self._color_reg = _color_reg
+        self._color_bold = _color_bold
+        self._color_mean = _color_mean
+        self._subsampling = _subsampling
 
-    stim_channel2 : int or None
-        Index of the second stim channel to visualize. Optional.
-        - Set to a value if more than one stimulation type is used
-          (eg two optic fibers, etc.)
-        - Use None to deactivate.
+        # plt.ion()
+        mplstyle.use('fast')
+        mpl.rcParams["path.simplify_threshold"] = 1.0
+        mpl.rcParams["axes.spines.top"] = False
+        mpl.rcParams["axes.spines.right"] = False
 
-    plot_mean : bool
-        If True, plots a trial-averaged trace in black on top of the
-        individual trial traces.
+        self.rec = load_all_channels(filename)
+        self.n_sigs = self.rec.sig.shape[0]
+        self.n_trials = self.rec.sig[0].shape[0]
 
-    plot_separate_trials : bool
-        If True, plots all trials as separate figures with the trial
-        number listed.
-    """
+        if plot_separate_trials is False:
+            # Setup figure, gridspec and axs
+            self.fig = plt.figure(constrained_layout=True)
+            n_rows = self.n_sigs + 1
+            height_ratios = np.ones(n_rows)
+            height_ratios[0] = 2  # First signal is taller
+            height_ratios[-1] = 0.2
 
-    # Load data and initialize variables
-    # ----------------
-    if stim_channel is None:
-        plot_stim = False
-    elif stim_channel is not None:
-        plot_stim = True
+            spec = gs.GridSpec(nrows=n_rows, ncols=15,
+                               figure=self.fig,
+                               height_ratios=height_ratios)
 
-    if stim_channel2 is None and plot_stim is True:
-        stim_channel2 = stim_channel
+            self.ax = []
+            self.ax.append(self.fig.add_subplot(spec[0, :]))
 
-    d = load([filename], input_channel=input_channel,
-             stim_channel=stim_channel)
-    d2 = load([filename], input_channel=input_channel2,
-              stim_channel=stim_channel2)
+            for sig in range(1, self.n_sigs):
+                self.ax.append(self.fig.add_subplot(spec[sig, :],
+                                                    sharex=self.ax[0]))
 
-    # Plotting of all trials together
-    # ------------
-    if plot_separate_trials is False:
-        fig = plt.figure()
+            # plot analog signals
+            self.lines = np.empty(self.n_sigs, dtype=np.ndarray)
+            self.lines_mean = np.empty(self.n_sigs, dtype=np.ndarray)
+            self.mean = np.empty(self.n_sigs, dtype=np.ndarray)
 
-        # Set up figure depending on whether stim is needed or not
-        if plot_stim is True:
-            spec = gs.GridSpec(nrows=3, ncols=1, figure=fig,
-                               height_ratios=[1, 0.5, 0.5])
-            ax_stim = fig.add_subplot(spec[2, 0])
-            ax_ana1 = fig.add_subplot(spec[0, 0], sharex=ax_stim)
-            ax_ana2 = fig.add_subplot(spec[1, 0], sharex=ax_stim)
-        elif plot_stim is False:
-            spec = gs.GridSpec(nrows=2, ncols=1, figure=fig,
-                               height_ratios=[1, 0.5])
-            ax_ana2 = fig.add_subplot(spec[1, 0])
-            ax_ana1 = fig.add_subplot(spec[0, 0], sharex=ax_ana2)
+            for sig in range(self.n_sigs):
+                self.lines[sig] = np.empty(self.n_trials, dtype=object)
+                self.ax[sig].set_ylabel(f'{self.rec.units[sig]}')
 
-        # Figure out number of trials
-        n_trials = d.analog_signals[0].shape[0]
+                for trial in range(self.n_trials):
+                    self.lines[sig][trial] = self.ax[sig].plot(
+                        self.rec.t[sig],
+                        self.rec.sig[sig][trial, :],
+                        color=self._color_reg,
+                        linewidth=0.5,
+                        markevery=self._subsampling)
 
-        # plot all traces
-        for trial in range(n_trials):
-            ax_ana1.plot(d.times[0], d.analog_signals[0][trial, :],
-                         color=[0.5, 0.5, 0.5], linewidth=0.5)
-            ax_ana2.plot(d2.times[0], d2.analog_signals[0][trial, :],
-                         color=[0.5, 0.5, 0.5], linewidth=0.5)
+                self.mean[sig] = np.mean(self.rec.sig[sig], axis=0)
 
-        if plot_stim is True:
-            ax_stim.plot(d.times[0], np.array(d.stim_signals[0]),
-                         color='b', linewidth=0.5)
-            ax_stim.plot(d2.times[0], np.array(d2.stim_signals[0]),
-                         color='r', linewidth=0.5)
-            ax_stim.set_ylabel('stim')
-            ax_stim.set_xlabel('time (s)')
+            self.ax[-1].set_xlabel('time (s)')
 
-        # Calculate and plot mean, if asked for
-        if plot_mean is True:
-            _ana_smoothed = np.zeros_like(d.analog_signals[0][0, :])
+            # buttons and callback
+            self._curr_trial = 0
+            self._mean_plotted = False
 
-            for trial in range(n_trials):
-                _ana_smoothed += d.analog_signals[0][trial, :]
+            ax_but_next = self.fig.add_subplot(
+                spec[-1, 12:15])
+            ax_but_next.set_zorder(10000)
 
-            _ana_smoothed /= n_trials
+            ax_but_prev = self.fig.add_subplot(
+                spec[-1, 9:12])
+            ax_but_prev.set_zorder(10000)
 
-            ax_ana1.plot(d.times[0], _ana_smoothed,
-                         color='k', linewidth=2)
+            ax_but_mean = self.fig.add_subplot(
+                spec[-1, 7:9])
 
-        # label axes, etc.
-        ax_ana1.set_ylabel('ch0')
-        ax_ana2.set_ylabel('ch1')
+            self.buttons = SimpleNamespace()
 
-        plt.show()
-        plt.close(fig)
-        del fig
+            self.buttons.next = Button(ax_but_next, 'Next')
+            self.buttons.next.on_clicked(self.on_next)
 
-    # Plotting of all trials separately
-    # ---------------
-    elif plot_separate_trials is True:
-        n_trials = d.analog_signals[0].shape[0]
-        figs = np.ndarray(n_trials, dtype=object)
-        axs = np.ndarray(n_trials, dtype=object)
+            self.buttons.prev = Button(ax_but_prev, 'Prev')
+            self.buttons.prev.on_clicked(self.on_prev)
 
-        for trial in range(n_trials):
-            figs[trial] = plt.figure()
-            axs[trial] = SimpleNamespace()
+            self.buttons.mean = Button(ax_but_mean, 'Avg.')
+            self.buttons.mean.on_clicked(self.on_mean)
 
-            if plot_stim is True:
-                # Set up plots
-                _spec = gs.GridSpec(nrows=3, ncols=1, figure=figs[trial],
-                                    height_ratios=[1, 0.5, 0.5])
+            self.bold_trial(self._curr_trial)
 
-                axs[trial].stim = figs[trial].add_subplot(_spec[2, 0])
-                axs[trial].ana1 = figs[trial].add_subplot(
-                    _spec[0, 0], sharex=axs[trial].stim)
-                axs[trial].ana2 = figs[trial].add_subplot(
-                    _spec[1, 0], sharex=axs[trial].stim)
+            # add text
+            self.text = self.fig.text(0.05, 0.03,
+                                      s=f'file: {self.fname} | ' +
+                                      f'trial: {self._curr_trial}',
+                                      fontweight='bold',
+                                      fontsize='medium',
+                                      color=[0, 0, 0])
+            plt.show()
 
-                # Plot stims
-                axs[trial].stim.plot(d.times[0], np.array(d.stim_signals[0]),
-                                     color='b', linewidth=0.5)
-                axs[trial].stim.plot(d2.times[0], np.array(d2.stim_signals[0]),
-                                     color='r', linewidth=0.5)
-                axs[trial].stim.set_ylabel('stim')
-                axs[trial].stim.set_xlabel('time (s)')
+        elif plot_separate_trials is True:
+            self.figs = np.ndarray(self.n_trials, dtype=object)
+            self.axs = np.ndarray(self.n_trials, dtype=object)
 
-            elif plot_stim is False:
-                _spec = gs.GridSpec(nrows=2, ncols=1, figure=figs[trial],
-                                    height_ratios=[1, 0.5])
+            for trial in range(self.n_trials):
+                self.figs[trial] = plt.figure()
+                self.axs[trial] = np.ndarray(self.n_sigs, dtype=object)
 
-                axs[trial].ana2 = figs[trial].add_subplot(
-                    _spec[1, 0])
-                axs[trial].ana1 = figs[trial].add_subplot(
-                    _spec[0, 0], sharex=axs[trial].ana2)
+            height_ratios = np.ones(self.n_sigs)
+            height_ratios[0] = 2
 
-            # Plot analog channels
-            axs[trial].ana1.plot(d.times[0], d.analog_signals[0][trial, :],
-                                 color=[0.5, 0.5, 0.5], linewidth=0.5)
-            axs[trial].ana2.plot(d2.times[0], d2.analog_signals[0][trial, :],
-                                 color=[0.5, 0.5, 0.5], linewidth=0.5)
+            spec = gs.GridSpec(nrows=self.n_sigs, ncols=1,
+                               height_ratios=height_ratios)
 
-            figs[trial].suptitle(f'trial {trial}')
-            axs[trial].ana1.set_ylabel('ch0')
-            axs[trial].ana2.set_ylabel('ch1')
+            # plot analog signals
+            for trial in range(self.n_trials):
+                # Make axes for this trial's figure
+                self.axs[trial][0] = self.figs[trial].add_subplot(
+                    spec[0, 0])
+                for sig in range(1, self.n_sigs):
+                    self.axs[trial][sig] = self.figs[trial].add_subplot(
+                        spec[sig, 0], sharex=self.axs[trial][0])
 
-        plt.show()
+                # Plot on all axes
+                for sig in range(self.n_sigs):
+                    self.axs[trial][sig].plot(
+                        self.rec.t[sig],
+                        self.rec.sig[sig][trial, :],
+                        color=self._color_reg, linewidth=0.5)
 
-        for fig in figs:
-            plt.close(fig)
-        del figs
+                    self.axs[trial][sig].set_xlabel('time (s)')
+                    self.axs[trial][sig].set_ylabel(
+                        f'{self.rec.units[sig]}')
 
-    del d
-    del d2
+            plt.show()
 
-    plt.clf()
+        return
 
-    return
+    def update_curr_trial_next(self):
+        if self._curr_trial >= self.n_trials - 1:
+            self._curr_trial = 0
+        else:
+            self._curr_trial += 1
 
-    #plot_events compares two synwrapper attributes (eg group1.ampli,
-    # group2.ampli)
+    def update_curr_trial_prev(self):
+        if self._curr_trial <= 0:
+            self._curr_trial = self.n_trials - 1
+        else:
+            self._curr_trial -= 1
 
-    #plot_statwrapper compares two stat files on attributes. For ex, to plot means +- standard error:
-    #stat1 = syn.get_stats(group1.ampli), stat2 = syn.get_stats(group2.ampli), syn.plot_statwrapper(stat1, stat2, ind = 0, err_ind = 2)
+    def on_next(self, event):
+        self.unbold_trial(self._curr_trial)
+        self.update_curr_trial_next()
+        self.bold_trial(self._curr_trial)
+
+        self.update_trialtext()
+        self.fig.canvas.draw_idle()
+
+    def on_prev(self, event):
+        self.unbold_trial(self._curr_trial)
+        self.update_curr_trial_prev()
+        self.bold_trial(self._curr_trial)
+
+        self.update_trialtext()
+        self.fig.canvas.draw_idle()
+
+    def on_mean(self, event):
+        if self._mean_plotted is False:
+            for sig in range(self.n_sigs):
+                self.lines_mean[sig] = self.ax[sig].plot(
+                    self.rec.t[0],
+                    self.mean[sig],
+                    color=self._color_mean,
+                    linewidth=1.5)
+            self._mean_plotted = True
+
+        elif self._mean_plotted is True:
+            for sig in range(self.n_sigs):
+                self.lines_mean[sig][0].remove()
+            self._mean_plotted = False
+
+        self.fig.canvas.draw_idle()
+
+    def bold_trial(self, trial):
+        n_sigs = self.rec.sig.shape[0]
+
+        for sig in range(n_sigs):
+            self.lines[sig][trial][0].remove()
+            self.lines[sig][trial] = self.ax[sig].plot(
+                self.rec.t[sig],
+                self.rec.sig[sig][trial, :],
+                color=self._color_bold,
+                linewidth=0.8,
+                markevery=self._subsampling)
+
+    def unbold_trial(self, trial):
+        n_sigs = self.rec.sig.shape[0]
+
+        for sig in range(n_sigs):
+            self.lines[sig][trial][0].remove()
+            self.lines[sig][trial] = self.ax[sig].plot(
+                self.rec.t[sig],
+                self.rec.sig[sig][trial, :],
+                color=self._color_reg,
+                linewidth=0.5,
+                markevery=self._subsampling)
+
+    def update_trialtext(self):
+        self.text.set_text(f'file: {self.fname} | ' +
+                           f'trial: {self._curr_trial}')
 
 
 def plot_events(postsynaptic_events_1, postsynaptic_events_2, name1 = 'Group 1', name2 = 'Group 2',

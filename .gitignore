@@ -7,5 +7,5 @@
 
 !setup.py
 !README.md
-/*.DS_Store
+
 !/synappy/*

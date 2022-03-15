@@ -1,10 +1,12 @@
 # imports
 from .classes import EphysObject
 import neo
+from types import SimpleNamespace
 import numpy as np
 
 
-def load(files, trials=None, input_channel=None, stim_channel=None):
+def load(files, trials=None, input_channel=None, stim_channel=None,
+         verbose=True):
     """
     Loads a dataset of .abf files into an EphysObject class instance.
     One input channel is loaded, corresponding to the recorded signal,
@@ -34,6 +36,9 @@ def load(files, trials=None, input_channel=None, stim_channel=None):
         - example: stim_channel=[0, 0, 2]
         - if None, defaults to loading last channel in the recording.
 
+    verbose : bool
+        Whether to print progress statements (True) or not (False).
+
     Returns
     -------------
     syn_obj : EphysObject
@@ -45,7 +50,8 @@ def load(files, trials=None, input_channel=None, stim_channel=None):
         - syn_obj.stim_signals[neuron][trial]
     """
 
-    print('\n\n----New Group---')
+    if verbose is True:
+        print('\n\n----New Group---')
 
     syn_obj = EphysObject()
 
@@ -116,6 +122,53 @@ def load(files, trials=None, input_channel=None, stim_channel=None):
             syn_obj.analog_units = reader.header['signal_channels'][
                 _in_ch]['units']
 
-    print('\nInitialized. \nAdded analog_signals. \nAdded times.')
+    if verbose is True:
+        print('\nInitialized. \nAdded analog_signals. \nAdded times.')
 
     return syn_obj
+
+
+def load_all_channels(fname):
+    """Internal function called by preview() in the visualize module.
+    Loads all channels in an .abf recording including their units.
+    """
+    rec = SimpleNamespace()
+
+    # Populate analog_signals and times from raw data in block
+    reader = neo.rawio.AxonRawIO(filename=fname)
+    reader.parse_header()
+    n_trials = reader.header['nb_segment'][0]
+    n_sigs = reader.header['signal_channels'].shape[0]
+
+    rec.sig = np.empty(n_sigs, dtype=np.ndarray)
+    rec.t = np.empty(n_sigs, dtype=np.ndarray)
+    rec.units = np.empty(n_sigs, dtype=list)
+
+    for ind_sig in range(n_sigs):
+        _raw_sig = reader.get_analogsignal_chunk(
+            block_index=0,
+            seg_index=0,
+            channel_indexes=[ind_sig])
+
+        # time
+        n_samples = _raw_sig.shape[0]
+        _t_interv = 1 / reader.get_signal_sampling_rate()
+        _t_stop = _t_interv * n_samples
+        rec.t[ind_sig] = np.arange(0, _t_stop, _t_interv)
+
+        # analog signal
+        rec.sig[ind_sig] = np.empty((n_trials, n_samples))
+        for trial in range(n_trials):
+            _raw_sig = reader.get_analogsignal_chunk(
+                block_index=0,
+                seg_index=trial,
+                channel_indexes=[ind_sig])
+            _float_sig = reader.rescale_signal_raw_to_float(
+                _raw_sig,
+                dtype='float64',
+                channel_indexes=[ind_sig])[:, 0]
+            rec.sig[ind_sig][trial, :] = _float_sig
+            rec.units[ind_sig] = reader.header['signal_channels'][
+                ind_sig]['units']
+
+    return rec

@@ -99,6 +99,8 @@ class EphysObject(object):
 
         print('\nAdded stim_on (event_type = ', event_type, ')')
 
+        return
+
     def add_ampli(self, event_sign='pos',
                   t_baseline_lower=4, t_baseline_upper=0.2,
                   t_event_lower=5, t_event_upper=30,
@@ -851,7 +853,7 @@ class EphysObject(object):
         return (stats)
 
     def _get_median_filtered(signal, threshold=3):
-        """Internal function passed to add_decays
+        """Internal function passed to .add_decay()
         """
         if type(signal) is not np.ma.core.MaskedArray:
             signal = signal.copy()
@@ -960,8 +962,8 @@ class EphysObject(object):
 
         print('\nMasked APs')
 
-    def add_decays(self, t_prestim=0, t_poststim=10, plotting=False,
-                   fn='monoexp_normalized_plusb'):
+    def add_decay(self, t_prestim=0, t_poststim=10, plotting=False,
+                  fn='monoexp_normalized_plusb'):
         """Fits each post-synaptic event with an exponential decay fuction
         and stores the fitted parameters in self.decay.
 
@@ -1381,7 +1383,7 @@ class EphysObject(object):
 
     def add_all(self, kwargs_add_ampli={'event_sign': 'pos'},
                 kwargs_add_integral={},
-                kwargs_add_decays={},
+                kwargs_add_decay={},
                 kwargs_mask_unclamped_aps=False,
                 kwargs_add_sucfail_sorting=False):
         """
@@ -1394,7 +1396,7 @@ class EphysObject(object):
             .latency) by calling the .add_ampli() method.
             - integral (.norm_integral, .norm_cdf_integral)
             by calling the .add_integral() method
-            - decays (.decay) by calling the .add_decays() method.
+            - decays (.decay) by calling the .add_decay() method.
 
         The following methods are optionally called by setting the
         associated kwargs to a dictionary, instead of the default of False:
@@ -1416,9 +1418,9 @@ class EphysObject(object):
             Dictionary of keyword arguments to be passed to the .add_integral()
             method. The docstring for .add_integral() contains more details.
 
-        kwargs_add_decays : dict
-            Dictionary of keyword arguments to be passed to the .add_decays()
-            method. The docstring for .add_decays() contains more details.
+        kwargs_add_decay : dict
+            Dictionary of keyword arguments to be passed to the .add_decay()
+            method. The docstring for .add_decay() contains more details.
 
         kwargs_mask_unclamped_aps : bool or dict
             If False, does not mask unclamped action potentials with the
@@ -1433,14 +1435,14 @@ class EphysObject(object):
 
         Attributes added
         ------------
-        See .add_ampli(), .add_integral(), .add_decays(),
+        See .add_ampli(), .add_integral(), .add_decay(),
         .mask_unclamped_aps() and .add_sucfail_sorting() for more info on the
         particular attributes added.
         """
 
         self.add_ampli(**kwargs_add_ampli)
         self.add_integral(**kwargs_add_integral)
-        self.add_decays(**kwargs_add_decay)
+        self.add_decay(**kwargs_add_decay)
 
         if type(kwargs_mask_unclamped_aps) is dict:
             self.mask_unclamped_aps(**kwargs_mask_unclamped_aps)
