@@ -1,20 +1,64 @@
-# SynapPy: Synaptic physiology in Python
+Table of Contents
+=================
 
-SynapPy is a data analysis tool for patch-clamp synaptic physiologists who work with .abf files and want to quickly quantify post-synaptic event statistics and visualize the results over multiple trials or neurons.
+   * [Introduction](#introduction)
+   * [Installation](#installation)
+   * [Getting started](#getting-started)
+      * [The basics](#the-basics)
+      * [Built-in event types](#built-in-event-types)
+         * [Rewards](#rewards)
+         * [GPIO stimuli](#gpio-stimuli)
+         * [Audio](#audio)
+         * [Looming visual stimulus](#looming-visual-stimulus)
+      * [Built-in measurement types](#built-in-measurement-types)
+         * [Continuous polling from GPIO:](#continuous-polling-from-gpio)
+         * [Notes on acquiring measurements](#notes-on-acquiring-measurements)
+      * [Video streaming](#video-streaming)
+   * [Advanced usage](#advanced-usage)
+      * [Defining stochastic event start times](#defining-stochastic-event-start-times)
+      * [Defining stochastic ITIs](#defining-stochastic-itis)
+      * [Constructing more complex experiments](#constructing-more-complex-experiments)
+   * [Stored data format: HDF5](#stored-data-format-hdf5)
+      * [Experiment attributes](#experiment-attributes)
+      * [Trial attributes](#trial-attributes)
+      * [Measurements](#measurements)
+      * [Events](#events)
+   * [Creating custom classes](#creating-custom-classes)
+      * [Events](#events-1)
+      * [Measurements](#measurements-1)
 
-Synappy works with either evoked or spontaneous events and includes a rapid and Pythonic set of methods to add post-synaptic event statistics, including amplitude, baseline, decay kinetics, rise-time, and release probability.
+# Introduction
 
-Synappy works with both current clamp and voltage clamp data, and both excitatory and inhibitory responses. It can also be used to analyze spike statistics and timing in current clamp. All that is needed is to specify the 'direction' (up or down) of the post-synaptic event, and to tune the time-window in which to look for a responses.
+SynapPy is a data analysis tool for patch-clamp synaptic physiologists who work with .abf files and want to rapidly quantify post-synaptic event statistics and visualize the results.
 
-SynapPy additionally includes intelligent data visualization tools and sophisticated data-quality vetting tools.
+Synappy detects electrically or optically evoked post-synaptic events in either current clamp or voltage clamp, as long as there is an input channel associated with these stimuli. In addition to detecting events, Synappy includes a Pythonic set of methods to quantify post-synaptic event statistics, including amplitude, baseline, decay kinetics, rise-time, and release probability. Finally, Synappy includes basic support for detecting spontaneous (non-stimulus-triggered) events and quantifying their statistics.
 
+SynapPy additionally includes intelligent tools for data visualization and quality control.
 
-## Getting Started
+# Installation
 
-### Prerequisites
-The main dependencies are: numpy, scipy, matplotlib and neo (ver 0.4+ recommended)
+The main dependencies are: python3, numpy, scipy, matplotlib and neo (ver 0.4+ recommended). Neo is used to parse raw data from the .abf files.
 
-### Loading data
+A basic installation using the included setup.py file:
+```python
+git clone https://github.com/micllynn/synappy/
+cd synappy
+python3 setup.py install
+```
+
+# Getting started
+
+## The basics
+We will start by importing the package and loading the data.
+
+```python
+import synappy
+
+files = ['test_file.abf', 'test_file2.abf']
+
+syn.load(files, )
+```
+
 SynapPy first loads the files into an instance of a specialized class containing the specified signal channels and the times as attributes:
     .analog_signals
         [neuron][trial, time_indices]
