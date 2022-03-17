@@ -1,37 +1,22 @@
 # imports
-from .core_fns import find_spontaneous, find_stims
+from .core_fns import find_spontaneous_events, find_stim_events
 from .helper_fns import find_last, _get_median_filtered
 import numpy as np
 import scipy.signal as sp_signal
 import scipy.optimize as sp_opt
 import scipy.integrate as sp_integrate
+import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gs
+from matplotlib.widgets import Button
 
-
-class AttributeArray(np.ndarray):
-    def __new__(cls, data, inds=None):
-        """An np.ndarray of data which can be assigned attributes.
-
-        Parameters
-        -------------
-        data : np.ndarray
-            A numpy array of data to transform into an InfoArray.
-        inds : np.ndarray
-            A numpy array represenitng indexes for each datapoint,
-            to store as self.inds.
-        """
-        arr = np.asarray(data).view(cls)
-
-        if inds is not None:
-            arr.inds = inds
-
-        return arr
+from types import SimpleNamespace
 
 
 class EphysObject(object):
     def __init__(self):
         """The EphysObject class is the primary class in synappy for loading
-        and working with electrophysiological classes.
+        and working with electrophysiological data.
 
         It is created by calling the synappy.load() function, which loads a
         dataset of recordings.
@@ -40,26 +25,43 @@ class EphysObject(object):
         triggered or spontaneous events, as well as to quantify event stats
         such as amplitude, decay, integral. Some class methods can also
         visualize traces and plot summary statistics.
+
+        The following provides a brief tutorial of working with EphysObjects:
+        >>> import synappy as syn
+        >>> d = syn.load(['ex_file_1.abf', 'ex_file_2.abf'])
+            Loading 1 recordings...
+                    File: 17511006.abf
+                            50 trials
+                            pA
+                            3.0s
+            Added .sig
+            Added .sig_stim
+            Added .t
+        >>> d.add_events()
+            Event counts:
+                    Neuron  0 :  1  event(s)
+            Added .events
         """
         pass
 
-    def add_stim_on(self,
-                    event_type='stim',
-                    stim_thresh=2,
-                    **kwargs_spont):
+    def add_events(self,
+                   event_type='stim',
+                   stim_thresh=2,
+                   **kwargs_spont):
         """
-        Find stimulus onsets from a stimulus channel, and add their indices to
+        Add event times, either triggered by a stimulus channel or
+        spontaneously occurring, and add their indices to
         an EphysObject instance. Used by methods to quantify stimulus-triggered
         event statistics.
 
-        Stores results in self.stim_on, which has the format:
-            stim_on[neuron][trial][event_index]
+        Stores results in self.events, which has the format:
+            events[neuron][trial][event_index]
 
         Parameters
         -------------
         event_type : str
             Indicates whether the event is stimulus-triggered
-            (event_type='stim') or spontaneous (event_type='spontaneous').
+            (event_type='stim') or spontaneous (event_type='spont').
 
         stim_thresh : float
             The stimulus onset threshold, typically in volts for TTL pulses
@@ -67,10 +69,11 @@ class EphysObject(object):
 
         **kwargs_spont : dict
             Keyword arguments for spontaneous event detection,
-            passed to find_spontaneous().
+            passed to find_spontaneous(). See .find_spontaneous() for
+            more details.
 
             All possible kwargs and their recommended values are:
-                spont_filtsize=1001,
+                {spont_filtsize=1001,
                 spont_threshampli=3,
                 spont_threshderiv=-1.2,
                 spont_thresh_pos_deriv=0.1,
@@ -79,39 +82,40 @@ class EphysObject(object):
         Example
         ------------
         >>> d = syn.load(['ex_file.abf'])
-        >>> d.add_stim_on(stim_thresh=2)
+        >>> d.add_events(stim_thresh=2)
 
         Attributes added to class instance
         ------------
-        self.stim_on : np.ndarray
+        self.events : np.ndarray
             An array of stimulus/spontaneous event onset indices
             for each neuron.
             - if event_type='stim':
-                .stim_on[neuron][trial][stim]
-            - if event_type='spontaneous':
-                .stim_on[neuron][trial][spontaneous_event]
+                .events[neuron][trial][stim]
+            - if event_type='spont':
+                .events[neuron][trial][spontaneous_event]
         """
+        self.event_type = event_type
 
         if event_type == 'stim':
-            self.stim_on = find_stims(self, thresh=stim_thresh)
-        elif event_type == 'spontaneous':
-            self.stim_on = find_spontaneous(self, kwargs_spont)
+            self.events = find_stim_events(self, thresh=stim_thresh)
+        elif event_type == 'spont':
+            self.events = find_spontaneous_events(self, kwargs_spont)
 
-        print('\nAdded stim_on (event_type = ', event_type, ')')
+        print('Added .events')
 
         return
 
     def add_ampli(self, event_sign='pos',
                   t_baseline_lower=4, t_baseline_upper=0.2,
                   t_event_lower=5, t_event_upper=30,
-                  smoothing_width=None,
+                  t_savgol_filt=2,
                   latency_method='max_ampli'):
         """
         Computes pre-event baseline values, event amplitudes,
         and event latencies (computed in a number of ways).
 
-        This requires a self.stim_on attribute, created by calling
-        the method self.add_stim_on(). For each stimulus, a baseline
+        This requires a self.events attribute, created by calling
+        the method self.add_events(). For each stimulus, a baseline
         signal is calculated between t_baseline_lower and
         t_baseline_upper before the stimulus onset. Next, a
         maximum event amplitude is calculated. Finally, the event
@@ -147,10 +151,9 @@ class EphysObject(object):
             The time after stimuli, in ms, from which to
             stop searching for events.
 
-        smoothing_width : None or int
-            Width of savgol filter applied to data, in inds,
+        t_savgol_filt : int
+            Width of savgol filter applied to data, in ms,
             before computing maximum amplitude.
-            If None, defaults to minimal smoothing (3 inds).
 
         latency_method : str
             The method used to calculate latency from stimulus to
@@ -187,246 +190,281 @@ class EphysObject(object):
                     lat_stat=0: latency from stim onset (s);
                     lat_stat=1: index of latency;
         """
-        num_neurons = len(self.analog_signals)
+        self.__check_for_events()
+
+        num_neurons = len(self.sig)
+
+        if event_sign == 'pos' or event_sign == 'up':
+            self.event_sign = 'pos'
+        if event_sign == 'neg' or event_sign == 'down':
+            self.event_sign = 'neg'
 
         # Define new vars to store event amplitude and latency
-        baseline = np.empty(num_neurons, dtype=np.ndarray)
-        ampli = np.empty(num_neurons, dtype=np.ndarray)
-        latency = np.empty(num_neurons, dtype=np.ndarray)
+        template_arr_neurs = np.empty(num_neurons, dtype=np.ndarray)
 
-        # Determine direction of postsynaptic events
-        if event_sign == 'pos' or event_sign == 'up':
-            event_direction = 1
-        if event_sign == 'neg' or event_sign == 'down':
-            event_direction = -1
+        self.baseline = SimpleNamespace(mean=template_arr_neurs.copy(),
+                                        std=template_arr_neurs.copy(),
+                                        inds_start=template_arr_neurs.copy(),
+                                        inds_stop=template_arr_neurs.copy(),
+                                        params=SimpleNamespace())
+        self.baseline.params.t_baseline_lower = t_baseline_lower
+        self.baseline.params.t_baseline_upper = t_baseline_upper
 
-        # extract event statistics for each neuron
+        self.ampli = SimpleNamespace(data=template_arr_neurs.copy(),
+                                     inds=template_arr_neurs.copy(),
+                                     params=SimpleNamespace())
+        self.ampli.params.t_event_lower = t_event_lower
+        self.ampli.params.t_event_upper = t_event_upper
+
+        self.latency = SimpleNamespace(data=template_arr_neurs.copy(),
+                                       inds=template_arr_neurs.copy(),
+                                       params=SimpleNamespace())
+        self.latency.params.latency_method = latency_method
+
+        self._all_stats = [self.baseline.mean, self.baseline.std,
+                           self.baseline.inds_start, self.baseline.inds_stop,
+                           self.ampli.data, self.ampli.inds,
+                           self.latency.data, self.latency.inds]
+
         for neuron in range(num_neurons):
-            # Define vars for this neuron
-            num_trials = len(self.analog_signals[neuron])
-            sample_rate = np.int32(np.round(1 / (self.times[neuron][1]
-                                                 - self.times[neuron][0])))
+            n_trials = len(self.sig[neuron])
 
-            # compute sample-rate-dependent variables
-            if smoothing_width is None:
-                smoothing_width = 2
-                savgol_width = np.int32(
-                    smoothing_width * sample_rate / 1000) + 1
-            else:
-                savgol_width = np.int32(
-                    smoothing_width * sample_rate / 1000) + 1
+            # preinitialize vars and arrays for this neuron
+            # -----------
+            ind_savgol_filt = self._from_t_to_ind(t_savgol_filt, neuron) + 1
 
-            abs_base_lower = np.int32(t_baseline_lower * sample_rate / 1000)
-            abs_base_upper = np.int32(t_baseline_upper * sample_rate / 1000)
-            abs_pse_lower = np.int32(t_event_lower * sample_rate / 1000)
-            abs_pse_upper = np.int32(t_event_upper * sample_rate / 1000)
+            ind_rel_bl_lower = self._from_t_to_ind(t_baseline_lower, neuron)
+            ind_rel_bl_upper = self._from_t_to_ind(t_baseline_upper, neuron)
+            ind_rel_event_lower = self._from_t_to_ind(t_event_lower, neuron)
+            ind_rel_event_upper = self._from_t_to_ind(t_event_upper, neuron)
 
-            max_stims = 0
-            for trial in range(num_trials):
-                if len(self.stim_on[neuron][trial]) > max_stims:
-                    max_stims = len(self.stim_on[neuron][trial])
+            # condition for spontaneous events:
+            if self.event_type == 'spont':
+                max_events = 0
+                for trial in range(n_trials):
+                    if len(self.events[neuron][trial]) > max_events:
+                        max_events = len(self.events[neuron][trial])
+            elif self.event_type == 'stim':
+                max_events = len(self.events[neuron][0])
 
-            baseline[neuron] = np.empty([num_trials, max_stims, 2],
-                                        dtype=np.ndarray)
-            ampli[neuron] = np.empty([num_trials, max_stims, 4],
-                                     dtype=np.ndarray)
-            latency[neuron] = np.empty([num_trials, max_stims, 2],
-                                       dtype=np.ndarray)
+            # initialize arrays in .baseline, .ampli, .latency:
+            template_arr_neurs = np.empty((n_trials, max_events),
+                                          dtype=np.ndarray)
+            for _arr in self._all_stats:
+                _arr[neuron] = template_arr_neurs.copy()
 
-            for trial in range(num_trials):
-                num_stims = len(self.stim_on[neuron][trial])
+            for trial in range(n_trials):
+                n_events = len(self.events[neuron][trial])
 
-                to_mask = np.arange(max_stims-1, num_stims-1, -1)
-                baseline[neuron][trial, to_mask] = 0
-                ampli[neuron][trial, to_mask] = 0
-                latency[neuron][trial, to_mask] = 0
+                # if spontaneous events, mask non-events in this trial
+                to_mask = np.arange(max_events-1, n_events-1, -1)
+                for _arr in self._all_stats:
+                    _arr[neuron][trial, to_mask] = 0
 
-                for stim in range(num_stims):
-                    # Calculate inds for this instance
-                    _base_lower = np.int32(
-                        self.stim_on[neuron][trial][stim] - abs_base_lower)
-                    _base_upper = np.int32(
-                        self.stim_on[neuron][trial][stim] - abs_base_upper)
-                    _pse_lower = np.int32(
-                        self.stim_on[neuron][trial][stim] + abs_pse_lower)
-                    _pse_upper = np.int32(
-                        self.stim_on[neuron][trial][stim] + abs_pse_upper)
+                for event in range(n_events):
+                    # Calculate event baseline mean and stdev
+                    # ------------
+                    _ind_bl_start = int(
+                        self.events[neuron][trial][event]
+                        - ind_rel_bl_lower)
+                    _ind_bl_stop = int(
+                        self.events[neuron][trial][event]
+                        - ind_rel_bl_upper)
+                    _ind_eventsearch_start = int(
+                        self.events[neuron][trial][event]
+                        + ind_rel_event_lower)
+                    _ind_eventsearch_stop = int(
+                        self.events[neuron][trial][event]
+                        + ind_rel_event_upper)
+
+                    self.baseline.inds_start[neuron][
+                        trial, event] = _ind_bl_stop
+                    self.baseline.inds_stop[neuron][
+                        trial, event] = _ind_bl_start
 
                     # Calculate event baseline
-                    baseline[neuron][trial, stim, 0] = np.mean(
-                        self.analog_signals[neuron][
-                            trial, _base_lower:
-                            _base_upper])
-                    baseline[neuron][trial, stim, 1] = np.std(
-                        self.analog_signals[neuron][
-                            trial, _base_lower:
-                            _base_upper])
+                    self.baseline.mean[neuron][trial, event] = np.mean(
+                        self.sig[neuron][
+                            trial, _ind_bl_start:_ind_bl_stop])
+                    self.baseline.std[neuron][trial, event] = np.std(
+                        self.sig[neuron][
+                            trial, _ind_bl_start:_ind_bl_stop])
 
-                    # Calculate event amplitude
-                    _analog = self.analog_signals[neuron][
-                        trial, _pse_lower:_pse_upper]
-                    _analog_sm = sp_signal.savgol_filter(
-                        _analog, savgol_width, 3)
+                    # Calculate event max amplitude and its index
+                    # -------------
+                    _sig_event = self.sig[neuron][
+                        trial, _ind_eventsearch_start:_ind_eventsearch_stop]
+                    _sig_event_ind_start = _ind_eventsearch_start
+                    _sig_event_filt = sp_signal.savgol_filter(
+                        _sig_event, ind_savgol_filt, 3)
 
-                    # calculate max event ampli [stim,0] and its index [stim,1]
-                    if event_direction == 1:
-                        ampli[neuron][trial, stim, 1] \
-                            = np.argmax(_analog_sm, axis=-1)
-                    elif event_direction == -1:
-                        ampli[neuron][trial, stim, 1] \
-                            = np.argmin(_analog_sm, axis=-1)
+                    if self.event_sign == 'pos':
+                        _sig_event_ind_maxampli = np.argmax(
+                            _sig_event_filt, axis=-1)
+                    elif self.event_sign == 'neg':
+                        _sig_event_ind_maxampli = np.argmin(
+                            _sig_event_filt, axis=-1)
+                    _ind_maxampli = _sig_event_ind_maxampli \
+                        + _sig_event_ind_start
 
-                    # correct index back to analog_signal reference
-                    ampli[neuron][trial, stim, 1] \
-                        += _pse_lower
-                    ampli[neuron][trial, stim, 0] \
-                        = self.analog_signals[neuron][
-                            trial, np.int32(
-                                ampli[neuron][trial, stim, 1])]
-                    ampli[neuron][trial, stim, 0] \
-                        -= baseline[neuron][trial, stim, 0]
+                    # index of max amplitude
+                    self.ampli.inds[neuron][trial, event] = \
+                        _ind_maxampli
 
-                    # store time of max_ampli latency in [stim,2]
-                    ampli[neuron][trial, stim, 2] = (
-                        self.times[neuron][np.int32(
-                            ampli[neuron][trial][stim, 1])]
-                        - self.times[neuron][np.int32(
-                            self.stim_on[neuron][trial][stim])])
+                    # event amplitude
+                    self.ampli.data[neuron][trial, event] \
+                        = self.sig[neuron][
+                            trial,
+                            self.ampli.inds[neuron][trial, event]]
 
-                    # ------------------------------
+                    # subtract baseline from amplitude
+                    self.ampli.data[neuron][trial, event] \
+                        -= self.baseline.mean[neuron][trial, event]
+
                     # Calculate event onset latencies
-                    max_ampli_smoothed_ind = np.int32(
-                        ampli[neuron][trial, stim, 1]
-                        - _pse_lower)
-
-                    if max_ampli_smoothed_ind < 2:
-                        max_ampli_smoothed_ind = 2
-
-                    _analog_sm_deriv = np.gradient(
-                        _analog_sm[0:max_ampli_smoothed_ind])
-
-                    if event_direction == 1:
-                        max_deriv_ind = np.argmax(_analog_sm_deriv)
-                        ampli[neuron][trial, stim, 3] \
-                            = _analog_sm_deriv[max_deriv_ind] \
-                            * (sample_rate/1000)
-                    elif event_direction == -1:
-                        max_deriv_ind = np.argmin(_analog_sm_deriv)
-                        ampli[neuron][trial, stim, 3] \
-                            = _analog_sm_deriv[max_deriv_ind] \
-                            * (sample_rate/1000)
-
-                    # determine latency and store in postsynaptic_event_latency
+                    # ------------------------------
                     if latency_method == 'max_ampli':
-                        event_time_index = np.int32(
-                            ampli[neuron][trial, stim, 1])
-                        stim_time_index = np.int32(
-                            self.stim_on[neuron][trial][stim])
-
-                        latency[neuron][trial, stim, 0] \
-                            = self.times[neuron][event_time_index] \
-                            - self.times[neuron][stim_time_index]
-                        latency[neuron][trial, stim, 1] \
-                            = ampli[neuron][trial, stim, 1]
+                        self.latency.data[neuron][trial, event] \
+                            = self.t[neuron][
+                                self.ampli.inds[neuron][trial, event]] \
+                            - self.t[neuron][
+                                self.events[neuron][trial][event]]
+                        self.latency.inds[neuron][trial, event] \
+                            = self.ampli.inds[neuron][trial, event]
 
                     elif latency_method == 'max_slope':
-                        event_time_index = np.int32(
-                            max_deriv_ind + _pse_lower)
-                        stim_time_index = np.int32(
-                            self.stim_on[neuron][trial][stim])
+                        # calc
+                        _sig_event_filt_grad = np.gradient(
+                            _sig_event_filt[
+                                0:np.min(_sig_event_ind_maxampli, 2).astype(
+                                    np.int)])
+                        _max_deriv_ind = np.argmax(_sig_event_filt_grad)
+                        _ind_lat = int(_max_deriv_ind
+                                       + _ind_eventsearch_start)
 
-                        latency[neuron][trial, stim, 0] \
-                            = self.times[neuron][event_time_index] \
-                            - self.times[neuron][stim_time_index]
-                        latency[neuron][trial, stim, 1] \
-                            = event_time_index
+                        # store
+                        self.latency.inds[neuron][trial, event] \
+                            = _ind_lat + _sig_event_ind_start
+                        self.latency.data[neuron][trial, event] \
+                            = self.t[neuron][
+                                int(_ind_lat - _sig_event_ind_start)]
 
                     elif latency_method == 'baseline_plus_4sd':
-                        _thresh = baseline[neuron][trial, stim, 0] \
-                            + 4 * baseline[neuron][trial, stim, 1]
+                        # calc
+                        _thresh = self.baseline.mean[neuron][trial, event] \
+                            + 4 * self.baseline.std[neuron][trial, event]
+                        _ind_lat = np.where(
+                            _sig_event_filt > _thresh)[0][0]
 
-                        # store temp vars for troubleshooting
-                        self._analog_sm_crop \
-                            = _analog_sm[0:max_ampli_smoothed_ind]
-                        self._analog_sm = _analog_sm
-                        self._thresh = _thresh
-
-                        _ind_1stcross = np.where(
-                            _analog_sm > _thresh)[0][0]
-
-                        latency[neuron][trial, stim, 0] \
-                            = self.times[neuron][
-                                _ind_1stcross + abs_pse_lower]
-                        latency[neuron][trial, stim, 1] \
-                            = _ind_1stcross + abs_pse_lower
+                        # store
+                        self.latency.inds[neuron][trial, event] \
+                            = _ind_lat + _sig_event_ind_start
+                        self.latency.data[neuron][trial, event] \
+                            = self.t[neuron][
+                                _ind_lat - _sig_event_ind_start]
 
                     elif latency_method == '80_20_line':
-                        value_80pc = 0.8 * (ampli[neuron][trial, stim, 0])\
-                            + baseline[neuron][trial, stim, 0]
-                        value_20pc = 0.2 * (ampli[neuron][trial, stim, 0])\
-                            + baseline[neuron][trial, stim, 0]
-                        value_80pc_sizeanalog = value_80pc \
-                            * np.ones(len(
-                                _analog_sm[0:max_ampli_smoothed_ind]))
-                        value_20pc_sizeanalog = value_20pc \
-                            * np.ones(len(
-                                _analog_sm[0:max_ampli_smoothed_ind]))
-                        diff_80pc = (_analog[0:max_ampli_smoothed_ind]
-                                     - value_80pc_sizeanalog) > 0
-                        diff_20pc = (_analog[0:max_ampli_smoothed_ind]
-                                     - value_20pc_sizeanalog) > 0
+                        # calc
+                        val_80pc = 0.8 * (
+                            self.ampli.data[neuron][trial, event])\
+                            + self.baseline.mean[neuron][trial, event]
+                        val_20pc = 0.2 * (
+                            self.ampli.data[neuron][trial, event])\
+                            + self.baseline.mean[neuron][trial, event]
 
-                        if event_direction == 1:
-                            ind_80cross = find_last(diff_80pc, tofind=0)
-                            ind_20cross = find_last(diff_20pc, tofind=0)
-                        elif event_direction == -1:
-                            ind_80cross = find_last(diff_80pc, tofind=1)
-                            ind_20cross = find_last(diff_20pc, tofind=1)
+                        arr_80pc = val_80pc * np.ones(len(
+                                _sig_event_filt[0:_sig_event_ind_maxampli]))
+                        arr_20pc = val_20pc * np.ones(len(
+                                _sig_event_filt[0:_sig_event_ind_maxampli]))
+
+                        diff_80pc = (_sig_event[0:_sig_event_ind_maxampli]
+                                     - arr_80pc) > 0
+                        diff_20pc = (_sig_event[0:_sig_event_ind_maxampli]
+                                     - arr_20pc) > 0
+
+                        if self.event_sign == 'pos':
+                            ind_80cross = find_last(diff_80pc, val=0)
+                            ind_20cross = find_last(diff_20pc, val=0)
+                        elif self.event_sign == 'neg':
+                            ind_80cross = find_last(diff_80pc, val=1)
+                            ind_20cross = find_last(diff_20pc, val=1)
 
                         if ind_20cross > ind_80cross or ind_80cross == 0:
-                            ind_80cross = np.int32(1)
-                            ind_20cross = np.int32(0)
+                            ind_80cross = int(1)
+                            ind_20cross = int(0)
 
-                        val_80cross = _analog_sm[ind_80cross]
-                        val_20cross = _analog_sm[ind_20cross]
+                        val_80cross = _sig_event_filt[ind_80cross]
+                        val_20cross = _sig_event_filt[ind_20cross]
 
                         slope_8020_line = (val_80cross - val_20cross) \
                             / (ind_80cross - ind_20cross)
 
                         vals_8020_line = np.zeros(
-                            len(_analog_sm[0:ind_80cross + 1]))
+                            len(_sig_event_filt[0:ind_80cross + 1]))
                         vals_8020_line = [(val_80cross - (ind_80cross - i)
                                            * slope_8020_line)
                                           for i in range(ind_80cross)]
 
-                        vals_baseline = baseline[neuron][trial, stim, 0] \
-                            * np.ones(len(_analog_sm[0:ind_80cross]))
+                        vals_baseline = self.baseline.mean[
+                            neuron][trial, event, 0] * np.ones(len(
+                                _sig_event_filt[0:ind_80cross]))
                         diff_sq_8020_line = (
                             (vals_baseline - vals_8020_line)**2
-                            + (_analog[0:ind_80cross] - vals_8020_line)**2)
+                            + (_sig_event[0:ind_80cross] - vals_8020_line)**2)
+                        _ind_lat = np.argmin(diff_sq_8020_line)
 
-                        intercept_8020_ind = np.argmin(diff_sq_8020_line)
+                        # store
+                        self.latency.inds[neuron][trial, event] \
+                            = _ind_lat + _sig_event_ind_start
+                        self.latency.data[neuron][trial, event] \
+                            = self.t[neuron][
+                                _ind_lat - _sig_event_ind_start]
 
-                        event_time_index = intercept_8020_ind \
-                            + _pse_lower
-                        stim_time_index = self.stim_on[neuron][trial][stim]
-                        latency[neuron][trial, stim, 0] = \
-                            self.times[neuron][event_time_index] \
-                            - self.times[neuron][stim_time_index]
-                        latency[neuron][trial, stim, 1] = event_time_index
+        # self.height is a legacy attribute
+        self.height = self.ampli
 
-        self.ampli = ampli
-        self.latency = latency
-        self.baseline = baseline
-
-        # self.height is for legacy support of earlier versions.
-        self.height = ampli
-
-        print('\nAdded ampli. \nAdded latency. \nAdded baseline.')
+        print('Added .ampli \nAdded .latency \nAdded .baseline')
 
         return
 
-    def add_sucfail_sorting(self, thresh=False, thresh_dir=False):
+    def add_ampli_norm(self):
+        """Adds normalized amplitude measurement to the class instance as
+        .ampli_norm. Amplitudes are normalized to the mean ampli for each
+        stimulus delivered to each neuron.
+
+        Parameters
+        ------------
+
+
+        Attributes added to class instance
+        ------------
+        self.ampli_norm : np.ndarray
+            An array of amplitudes and associated metrics.
+                .ampli_norm[neuron][trial, stim, ampli_stat], where
+                    ampli_stat=0: max amplitude (norm.);
+                    ampli_stat=1: index of max amplitude;
+                    ampli_stat=2: time from stim onset to max amplitude.
+        """
+        self.__check_for_events()
+        self.__check_for_ampli()
+
+        num_neurons = len(self.ampli.data)
+        self.ampli_norm = SimpleNamespace(
+            data=np.empty(num_neurons, dtype=np.ndarray),
+            inds=np.empty(num_neurons, dtype=np.ndarray))
+
+        for neuron in range(num_neurons):
+            _mean_amplis = np.mean(self.ampli.data[neuron], axis=0)
+
+            self.ampli_norm.data[neuron] = self.ampli.data[neuron].copy() \
+                / _mean_amplis
+            self.ampli_norm.inds[neuron] = self.ampli.inds[neuron].copy()
+
+        print('Added .ampli_norm')
+
+        return
+
+    def add_failure_sorting(self, thresh=False, _invert_sorting=False):
         """
         Adds trial-by-trial success/failure sorting to the events, where
         failures are stored as masked elements in the following attributes:
@@ -447,340 +485,497 @@ class EphysObject(object):
             - If thresh = False, the threshold for event failures is
             automatically specified as the mean +- 3*S.D. for each trace.
             - Otherwise, the threshold is determined by the user
-            for all neurons.
+            for all neurons, as a minimum amplitude from baseline.
             (if type(thresh) == float), or for each neuron individually
             (if type(thresh) == list)
 
-        thresh_dir : bool
-            Determines whether the threshold is unidirectional (True: in the
-            direction previously specified for events) or bidirectional (False)
+        _invert_sorting : bool
+            If True, keeps failures and masks successes. Can be useful
+            in some cases.
 
         Attributes added to class instance
         ------------
         .ampli, .latency, .baseline are modified to be np.masked.arrays, with
         the masked elements corresponding to failures. In addition, the
-        following attribute is added:
+        following attributes are added:
 
         self.mask : np.ndarray
-            An boolean array denoting which trials/stims are failures (True)
-            or successes (False).
+            A boolean masking array in which trials/stims are failures (True,
+            masked) or successes (False, unmasked).
                 .mask[neuron][trial, stim]
+        self.fail_rate : np.ndarray
+            An array of the fractional failure rate of each stimulus
+            presentation in each neuron.
+                .fail_rate[neuron][stim]
+            - For example, if stimulus 3 delivered to neuron 1 evoked
+            suprathreshold responses in 15/20 trials (where thresh defines
+            threshold), self.fail_rate[1][3] = 0.75.
 
         """
+        self.__check_for_events()
+        self.__check_for_ampli()
 
-        postsynaptic_event = self.ampli
-        postsynaptic_event_latency = self.latency
-        baseline = self.baseline
+        n_neurons = len(self.ampli.data)
 
-        num_neurons = len(postsynaptic_event)
-        thresh = np.array(thresh, dtype=np.float)
+        # initialize arrays
+        self.mask = np.empty(n_neurons, dtype=np.ndarray)
+        self.mask_params = SimpleNamespace(thresh=thresh,
+                                           _invert_sorting=_invert_sorting)
+        self.fail_rate = np.empty(n_neurons, dtype=np.ndarray)
 
-        self.mask = np.empty(num_neurons, dtype=np.ndarray)
-
-        postsynaptic_event_successes = np.empty(num_neurons, dtype=np.ndarray)
-        postsynaptic_event_latency_successes = np.empty(num_neurons,
-                                                        dtype=np.ndarray)
-
-        dynamic_thresholding = False
-        if type(thresh) is bool and thresh is False:
+        if thresh is False:
             dynamic_thresholding = True
-        elif (len(np.atleast_1d(thresh)) is not num_neurons and
-              len(np.atleast_1d(thresh)) == 1):
-            thresh = np.ones(num_neurons) * thresh
+        elif type(thresh) == list:
+            pass
+        elif type(thresh) == float or type(thresh) == int:
+            thresh = np.one(n_neurons) * thresh
 
-        for neuron in range(num_neurons):
-            postsynaptic_event_successes[neuron] = np.ma.array(
-                np.copy(postsynaptic_event[neuron]))
-            postsynaptic_event_latency_successes[neuron] = np.ma.array(
-                np.copy(postsynaptic_event_latency[neuron]))
-
-            ampli_tocompare = np.abs(postsynaptic_event[neuron][:, :, 0])
-
+        for neuron in range(n_neurons):
+            # compare threshold with amplitudes to make mask
             if dynamic_thresholding is True:
-                thresh_tocompare = 4 * baseline[neuron][:, :, 1]
+                _thresh = 4 * self.baseline.std[neuron][:, :]
             else:
-                thresh_thisneuron = thresh[neuron]
-                thresh_tocompare = np.abs(thresh_thisneuron) * np.ones_like(
-                    baseline[neuron][:, :, 1])
+                _thresh = thresh[neuron] * np.ones_like(
+                    self.ampli.data[neuron].shape[0])
 
-            diff_tocompare = ampli_tocompare - thresh_tocompare
-            if thresh_dir is False:
-                mask_tocompare = diff_tocompare < 0
-            elif thresh_dir is True:
-                mask_tocompare = diff_tocompare > 0
+            _diff = np.abs(self.ampli.data[neuron]) - _thresh
 
-            mask_tocompare_full_pes = np.ma.empty(
-                [mask_tocompare.shape[0], mask_tocompare.shape[1],
-                 postsynaptic_event[neuron].shape[2]])
-            for shape_3d in range(postsynaptic_event[neuron].shape[2]):
-                mask_tocompare_full_pes[:, :, shape_3d] = mask_tocompare
+            if _invert_sorting is False:
+                self.mask[neuron] = _diff < 0
+            elif _invert_sorting is True:
+                self.mask[neuron] = _diff > 0
 
-            mask_tocompare_full_lat = np.ma.empty(
-                [mask_tocompare.shape[0], mask_tocompare.shape[1],
-                 postsynaptic_event_latency[neuron].shape[2]])
-            for shape_3d in range(postsynaptic_event_latency[neuron].shape[2]):
-                mask_tocompare_full_lat[:, :, shape_3d] = mask_tocompare
+            # failure rate calc
+            n_stims = self.ampli.data[neuron].shape[1]
+            self.fail_rate[neuron] = np.empty(n_stims)
+            for stim in range(n_stims):
+                self.fail_rate[neuron][stim] = np.sum(
+                    self.mask[neuron], axis=0) \
+                    / self.mask[neuron].shape[0]
 
-            postsynaptic_event_successes[neuron].mask = mask_tocompare_full_pes
-            postsynaptic_event_latency_successes[neuron].mask \
-                = mask_tocompare_full_lat
+            self._propagate_mask()
 
-            self.ampli[neuron] = np.ma.masked_array(
-                self.ampli[neuron],
-                mask=mask_tocompare_full_pes)
-            self.latency[neuron] = np.ma.masked_array(
-                self.latency[neuron],
-                mask=mask_tocompare_full_pes[:, :, 0:2])
-            self.mask[neuron] = mask_tocompare_full_pes[:, :, 0]
-            self.baseline[neuron] = np.ma.masked_array(
-                self.baseline[neuron],
-                mask=mask_tocompare_full_pes[:, :, 0:2])
-
-        print('\nAdded succ/fail sorting to: '
-              '\n\tampli \n\tlatency, \n\tbaseline')
+        print('Added .mask for success/failure event sorting')
+        print('Updated all attributes with .mask')
 
         return
 
-    def add_inverted_sucfail_sort(self):
-        """ Adds inverted success/failure sorting, where successes are
-        masked instead of failures. See add_sucfail_sorting() for
-        more information on the basic operation.
+    def add_decay(self, t_prestim=0, t_poststim=10, plotting=False,
+                  fn='monoexp'):
+        """Fits each post-synaptic event with an exponential decay fuction
+        and stores the fitted parameters in self.decay.
 
-        The inverted sorting is stored in the .ampli_fails attribute.
-        """
-        postsynaptic_event_successes = self.ampli
-        num_neurons = len(postsynaptic_event_successes)
-
-        self.ampli_fails = np.empty(num_neurons, dtype=np.ndarray)
-
-        postsynaptic_event_failures = np.empty(num_neurons, dtype=np.ndarray)
-
-        for neuron in range(num_neurons):
-            success_mask = np.ma.getmask(postsynaptic_event_successes[neuron])
-            failure_mask = np.logical_not(success_mask)
-
-            postsynaptic_event_failures[neuron] = np.ma.array(
-                np.copy(postsynaptic_event_successes[neuron]),
-                mask=failure_mask)
-            self.ampli_fails[neuron] = np.ma.array(
-                np.copy(postsynaptic_event_successes[neuron]),
-                mask=failure_mask)
-
-        return
-
-    def add_normalized_ampli(self):
-        """Adds normalized amplitude measurement to the class instance as
-        .ampli_norm. Amplitudes are normalized to the mean ampli for each
-        stimulus delivered to each neuron.
+        Decay equation variables correspond to the fitted variables for
+        the equation used (see the kwarg fn for more info).
+        - monoexponential decay: lambda1, b.
+        - biexponential decay: lambda1, lambda2, vstart2, b.
 
         Parameters
         ------------
+        prestim : float
+            Time before stimulus, in ms, to include in signal
+            used to compute decay.
 
+        poststim : float
+            Time after stimulus, in ms, to include in signal
+            used to compute decay.
 
-        Attributes added to class instance
+        plotting : bool
+            Whether to plot examples of decay fits (True) or not (False).
+
+        fn : str
+            Exponential decay function to use.
+            - 'monoexp': y = e^(-t * lambda1) + b
+            - 'biexp_normalized_plusb': y = e^(-t * lambda1)
+                + vstart * e^(-t / lambda2) + b
+
+            (In all cases, the more traditional decay tau can be computed
+            as tau= 1/lambda).
+
+        Attributes added
         ------------
-        self.ampli_norm : np.ndarray
-            An array of amplitudes and associated metrics.
-                .ampli_norm[neuron][trial, stim, ampli_stat], where
-                    ampli_stat=0: max amplitude (norm.);
-                    ampli_stat=1: index of max amplitude;
-                    ampli_stat=2: time from stim onset to max amplitude.
+        self.decay : SimpleNamespace
+            A namespace of fitted decay parameters.
+
+            .decay.vars[neuron][trial, stim, decay_param]
+                Fitted variables for monoexponential decay.
+
+                - If fn='monoexp', then
+                    decay_param=0 : lambda1
+                    decay_param=1 : b
+
+                - If fn='biexp_normalized_plusb', then
+                    decay_param=0 : lambda1
+                    decay_param=1 : lambda2
+                    decay_param=2 : vstart2
+                    decay_param=3 : b
+
+            .decay.covari[neuron][trial, stim, decay_param]
+                Covariance matrices for fitted variables,
+                as documented in .decay.vars
+
+            .decay.params
+                Parameters related to the decay fitting.
         """
+        self.__check_for_events()
+        self.__check_for_ampli()
 
-        postsynaptic_event = self.ampli
+        # Import variables from synappy wrapper
+        n_neurons = len(self.ampli.data)
 
-        num_neurons = len(postsynaptic_event)
+        self.decay = SimpleNamespace(vars=np.empty(n_neurons,
+                                                   dtype=np.ndarray),
+                                     covari=np.empty(n_neurons,
+                                                     dtype=np.ndarray),
+                                     params=SimpleNamespace())
+        self.decay.params.fn = fn
 
-        postsynaptic_event_normalized = np.empty(num_neurons, dtype=np.ndarray)
-        self.ampli_norm = np.empty(num_neurons, dtype=np.ndarray)
-        avg_ampl = np.empty(num_neurons)
+        def biexp(time_x, lambda1, lambda2, vstart2, b):
+            y = np.exp(time_x * (-1) * lambda1) \
+                + vstart2 * np.exp(time_x * (-1) * lambda2) + b
+            return y
 
-        for neuron in range(num_neurons):
-            postsynaptic_event_normalized[neuron] = np.ma.copy(
-                postsynaptic_event[neuron])
-            self.ampli_norm[neuron] = np.ma.copy(
-                postsynaptic_event[neuron])
+        def monoexp(time_x, lambda1, b):
+            y = np.exp(time_x * (-1) * lambda1) + b
+            return y
 
-            avg_ampl = np.mean(postsynaptic_event[neuron][:, 0, 0])
+        if fn == 'monoexp':
+            n_vars = 2
+            vars_guess = [100, 0]
+        elif fn == 'biexp':
+            n_vars = 4
+            vars_guess = [100, 100, 1, 0]
 
-            if type(postsynaptic_event[neuron]) is np.ma.core.MaskedArray:
-                current_neuron_mask = postsynaptic_event[neuron][:, :, 0].mask
+        for neuron in range(n_neurons):
+            n_trials = self.ampli.data[neuron].shape[0]
+            n_stims = self.ampli.data[neuron].shape[1]
 
-                postsynaptic_event_normalized_temp = np.array(
-                    postsynaptic_event[neuron][:, :, 0]) / avg_ampl
-                postsynaptic_event_normalized[neuron][:, :, 0] \
-                    = np.ma.array(postsynaptic_event_normalized_temp,
-                                  mask=current_neuron_mask)
+            ind_prestim = self._from_t_to_ind(t_prestim, neuron)
+            ind_poststim = self._from_t_to_ind(t_poststim, neuron)
+
+            if type(self.ampli.data[neuron]) is np.ma.core.MaskedArray:
+                self.decay.vars[neuron] = np.ma.array(np.empty(
+                    [n_trials, n_stims, n_vars], dtype=np.ndarray))
+                self.decay.vars[neuron].mask = self.ampli.data[neuron].mask
+                self.decay.covari[neuron] = np.ma.array(np.empty(
+                    [n_trials, n_stims, n_vars], dtype=np.ndarray))
+                self.decay.covari[neuron].mask = self.ampli.data[neuron].mask
+
             else:
-                postsynaptic_event_normalized[neuron][:, :, 0] /= avg_ampl
+                self.decay.vars[neuron] = np.empty(
+                    [n_trials, n_stims, n_vars], dtype=np.ndarray)
+                self.decay.covari[neuron] = np.empty(
+                    [n_trials, n_stims, n_vars], dtype=np.ndarray)
 
-            self.ampli_norm[neuron] = postsynaptic_event_normalized[neuron]
+            for trial in range(n_trials):
+                for stim in range(n_stims):
 
-        print('\nAdded ampli_norm.')
+                    if (type(self.ampli.data[neuron])
+                            == np.ma.core.MaskedArray and
+                            self.ampli.data[neuron][trial, stim] is not
+                            np.ma.masked):
+
+                        event_ind_min = self.ampli.inds[neuron][
+                            trial, stim] - ind_prestim
+                        event_ind_max = event_ind_min + ind_poststim
+
+                        postsynaptic_curve = self.sig[neuron][
+                            trial, event_ind_min:event_ind_max] \
+                            - self.baseline.mean[neuron][trial, stim]
+                        postsynaptic_curve /= np.mean(postsynaptic_curve[0:2])
+
+                        times_forfit = self.t[neuron][0:ind_poststim]
+
+                        try:
+                            [popt, pcov] = sp_opt.curve_fit(
+                                monoexp, times_forfit,
+                                postsynaptic_curve, p0=vars_guess)
+
+                        except RuntimeError:
+                            popt = np.ones(n_vars) * 10000
+                            pcov = 10000
+
+                        except ValueError:
+                            print(postsynaptic_curve, 'neuron: ', neuron,
+                                  'trial: ', trial, 'stim: ', stim)
+
+                        self.decay.vars[neuron][trial, stim, :] = popt[:]
+
+                    elif (type(self.ampli.data[neuron])
+                          == np.ma.core.MaskedArray and
+                          self.ampli.data[neuron][trial, stim] is
+                          np.ma.masked):
+
+                        self.decay.vars[neuron][trial, stim, :] = np.ones(
+                            n_vars) * 10000
+                        self.decay.vars[neuron][trial, stim, :].mask = np.ones(
+                            n_vars, dtype=np.bool)
+
+                    elif (type(self.ampli.data[neuron]) is not
+                          np.ma.core.MaskedArray):
+                        event_ind_min = self.ampli.inds[neuron][
+                            trial, stim] - ind_prestim
+                        event_ind_max = event_ind_min + ind_poststim
+
+                        postsynaptic_curve = self.sig[neuron][
+                            trial, event_ind_min:event_ind_max] \
+                            - self.baseline.mean[neuron][trial, stim]
+                        postsynaptic_curve /= postsynaptic_curve[0]
+
+                        times_forfit = self.t[neuron][0:ind_poststim]
+
+                        try:
+                            [popt, pcov] = sp_opt.curve_fit(
+                                monoexp, times_forfit,
+                                postsynaptic_curve, p0=vars_guess)
+
+                        except RuntimeError:
+                            popt = np.ones(n_vars) * 10000
+
+                        self.decay.vars[neuron][trial, stim, :] = popt[:]
+
+            if plotting is True:
+                if type(self.ampli.data[neuron]) == np.ma.core.MaskedArray:
+                    first_nonmasked_trial = (np.argwhere(
+                        self.ampli.inds[neuron][:, 0].mask is False)
+                                             [0][0])
+
+                    postsynaptic_curve = (self.sig[neuron][
+                        first_nonmasked_trial,
+                        self.ampli.inds[neuron]
+                        [first_nonmasked_trial, 0] - ind_prestim:
+                        self.ampli.inds[neuron]
+                        [first_nonmasked_trial, 0] + ind_poststim]
+                        - self.baseline.mean[neuron][first_nonmasked_trial, 0])
+
+                    y_fitted = (self.ampli.data[neuron]
+                                [first_nonmasked_trial, 0]
+                                * monoexp(
+                                    self.t[neuron][0:ind_poststim
+                                                   + ind_prestim],
+                                    self.decay.vars[neuron][
+                                        first_nonmasked_trial, 0, 0],
+                                    self.decay.vars[neuron][
+                                        first_nonmasked_trial, 0, 1]))
+
+                    plt.figure()
+                    plt.plot(self.t[neuron][0:ind_poststim + ind_prestim],
+                             y_fitted, 'r')
+                    plt.plot(self.t[neuron][0:ind_poststim + ind_prestim],
+                             postsynaptic_curve, 'b')
+
+                elif type(self.ampli.data[neuron]) is np.ndarray:
+                    postsynaptic_curve = (self.sig[neuron]
+                                          [0, self.ampli.inds[neuron]
+                                           [0, 0] - ind_prestim:
+                                           self.ampli.inds[neuron][0, 0]
+                                           + ind_poststim]
+                                          - self.baseline.mean[neuron][0, 0])
+                    y_fitted = (self.ampli.data[neuron][0, 0]
+                                * monoexp(
+                                    self.t[neuron][0:ind_poststim
+                                                   + ind_prestim],
+                                    self.decay.vars[neuron][0, 0, 0],
+                                    self.decay.vars[neuron][0, 0, 1]))
+                    plt.figure()
+                    plt.plot(self.t[neuron][0:ind_poststim + ind_prestim],
+                             y_fitted, 'r')
+                    plt.plot(self.t[neuron][0:ind_poststim + ind_prestim],
+                             postsynaptic_curve, 'b')
+
+            # convert from lambda to tau
+            fitted_ones = np.ones([self.decay.vars[neuron][:, :, 0].shape[0],
+                                   self.decay.vars[neuron][:, :, 0].shape[1]])
+
+            if type(self.ampli.data[neuron]) is np.ma.core.MaskedArray:
+                self.decay.vars[neuron][:, :, 0] = fitted_ones / np.array(
+                    self.decay.vars[neuron][:, :, 0])
+                self.decay.vars[neuron][:, :, 0] = _get_median_filtered(
+                    self.decay.vars[neuron][:, :, 0], threshold=10)
+                fittedvarmask = np.ma.mask_or(
+                    self.ampli.data[neuron][:, :].mask,
+                    self.decay.vars[neuron][:, :, 0].mask)
+                self.decay.vars[neuron][:, :, 0].mask = fittedvarmask
+
+            else:
+                self.decay.vars[neuron][:, :, 0] = (
+                    fitted_ones / self.decay.vars[neuron][:, :, 0])
+                self.decay.vars[neuron][:, :, 0] = _get_median_filtered(
+                    self.decay.vars[neuron][:, :, 0], threshold=10)
+
+        plt.show()
+        print('Added .decay')
 
         return
 
-    def pool_stat_across_neurs(self, name, pool_index=0, mask='suc'):
-        """For an event statistic of a given name (eg 'ampli'), pools all
-        trial-by-trial values of this statistic across all neurons while
-        preserving stimulus order.
+    def add_integral(self, t_integral=1000, cdf_bins=100):
+        """
+        Compute the integral for each post-synaptic event.
 
-        Only considers the minimum number of stimuli that are 'common'
-        to all neurons, such that the returned array has shape
-        [n_stim, n_neur] and contains the statistics of note.
+        Parameters
+        -----------------
+        t_integral : float
+            The total post-stimulus time to integrate, in milliseconds.
+
+        cdf_bins : int
+            Number of bins for the cumulative integral
+
+
+        Attributes added
+        ------------
+        self.integral : np.ndarray
+            An array of integral values (mV*sec or pA*sec).
+                .integral[neuron][trial, stim]
+        self.integral_cdf : np.ndarray
+            An array containing the cumulative distribution of the integral,
+            with bins=cdf_bins, over the entire t_integral time. (units are
+            fractional integral from 0->1.)
+                .integral_cdf[neuron][trial, stim][cdf_bin]
+        """
+        self.__check_for_events()
+        self.__check_for_ampli()
+
+        n_neurons = len(self.sig)
+
+        self.integral = SimpleNamespace(
+            data=np.empty(n_neurons, dtype=np.ndarray),
+            cdf=np.empty(n_neurons, dtype=np.ndarray),
+            params=SimpleNamespace(t_integral=t_integral,
+                                   cdf_bins=cdf_bins))
+
+        for neuron in range(n_neurons):
+            n_trials = self.ampli.data[neuron].shape[0]
+            n_stims = self.ampli.data[neuron].shape[1]
+            self.integral.data[neuron] = np.zeros([n_trials, n_stims])
+            self.integral.cdf[neuron] = np.zeros(
+                [n_trials, n_stims, int(cdf_bins)])
+
+            for trial in range(n_trials):
+                for stim in range(n_stims):
+                    # calc integral
+                    ind_start = int(self.events[neuron][stim])
+                    ind_end = self._from_t_to_ind(t_integral, neuron) \
+                        + ind_start
+
+                    _sig_event = (
+                        self.sig[neuron][trial, ind_start:ind_end]
+                        - self.baseline.mean[neuron][trial, stim])
+                    _t_event = self.t[neuron][ind_start:ind_end]
+
+                    self.integral.data[neuron][trial, stim] \
+                        = sp_integrate.trapz(_sig_event, _t_event)
+
+                    # calc cdf
+                    for nbin in range(cdf_bins):
+                        _curr_cdf_frac = (nbin+1) / cdf_bins
+
+                        ind_end = int((self._from_t_to_ind(t_integral, neuron)
+                                       + ind_start) * _curr_cdf_frac)
+
+                        _sig_event = (self.sig[neuron][
+                            trial, ind_start:ind_end]
+                                    - self.baseline.mean[neuron][trial, stim])
+                        _t_event = self.t[neuron][ind_start:ind_end]
+
+                        self.integral.cdf[neuron][trial, stim, nbin] = (
+                            sp_integrate.trapz(_sig_event, _t_event)
+                            / self.integral.data[neuron][trial, stim])
+
+        print('Added .integral')
+
+        return
+
+    def add_all(self, kwargs_add_ampli={'event_sign': 'pos'},
+                kwargs_add_integral={},
+                kwargs_add_decay={},
+                kwargs_mask_unclamped_aps=False,
+                kwargs_add_failure_sorting=False):
+        """
+        Convenience method which takes an initialized EphysObject with
+        a .events attribute (stimulus onsets), and quantifies
+        several postsynaptic event attributes by calling the following
+        class methods:
+
+            - amplitude (.ampli, .norm_ampli, .baseline,
+            .latency) by calling the .add_ampli() method.
+            - integral (.norm_integral, .norm_cdf_integral)
+            by calling the .add_integral() method
+            - decays (.decay) by calling the .add_decay() method.
+
+        The following methods are optionally called by setting the
+        associated kwargs to a dictionary, instead of the default of False:
+            - masking unclamped action potentials through the
+            .mask_unclamped_aps() method.
+            - successes and failure sorting (.mask, used to create an
+            array maksing failures within .ampli, .baseline, .latency) through
+            the .add_failure_sorting() method
+
+        Parameters
+        -----------------
+        kwargs_add_ampli : dict
+            Dictionary of keyword arguments to be passed to the .add_ampli()
+            method. The docstring for .add_ampli() contains more details.
+            - event_sign can be 'pos' or 'neg' depending on the polarity of
+            responses under investigation.
+
+        kwargs_add_integral : dict
+            Dictionary of keyword arguments to be passed to the .add_integral()
+            method. The docstring for .add_integral() contains more details.
+
+        kwargs_add_decay : dict
+            Dictionary of keyword arguments to be passed to the .add_decay()
+            method. The docstring for .add_decay() contains more details.
+
+        kwargs_mask_unclamped_aps : bool or dict
+            If False, does not mask unclamped action potentials with the
+            .mask_unclamped_aps() method.
+            If a dict, masks unclamped aps using the dict as kwargs to
+            .mask_unclamped_aps().
+
+        kwargs_add_failure_sorting : bool or dict
+            If False, does not add success/failure sorting of events.
+            If a dict, adds suc/fail sorting to events, using the
+            dict as kwargs to .add_failure_sorting().
+
+        Attributes added
+        ------------
+        See .add_ampli(), .add_integral(), .add_decay(),
+        .mask_unclamped_aps() and .add_failure_sorting() for more info on the
+        particular attributes added.
+        """
+
+        self.add_ampli(**kwargs_add_ampli)
+        self.add_integral(**kwargs_add_integral)
+        self.add_decay(**kwargs_add_decay)
+
+        if type(kwargs_mask_unclamped_aps) is dict:
+            self.mask_unclamped_aps(**kwargs_mask_unclamped_aps)
+
+        if type(kwargs_add_failure_sorting) is dict:
+            self.add_failure_sorting(**kwargs_add_failure_sorting)
+
+        return
+
+    def preview(self, neur, attr=None):
+        """Plots the analog signals from a given neuron, and a list of attributes.
 
         Parameters
         ------------------
-        name : str
-            Name of the event statistic. (eg 'ampli' or 'latency' or
-            'baseline'.)
+        neur : ind
+            The index of the neuron to preview.
 
-        pool_index : ind
-            Index of attribute's array to pool over. Mostly for internal use.
-
-        mask : str
-            Can either be 'suc', meaning only successes are considered,
-            or 'all', meaning successes/failures are considered while
-            pooling.
-
-        Returns
-        ---------------
-        stimpooled_postsynaptic_events : array
-            An array of  [n_stim, n_neur] consisting of individual
-            statistics of the desired type (denoted by the kwarg name)
-            which are pooled over all trialtypes and neurons.
+        attr : None or str
+            If not None, the name of an attribute within the EphysObj class
+            instance to preview. Can be:
+                'ampli'
+                'latency'
+                'baseline'
         """
 
-        if type(name) is str:
-            postsynaptic_event = self.__getattribute__(name)
-        else:
-            postsynaptic_event = name
+        p = PreviewEphysObject(self, neur, attr)
+        p.plot()
 
-        num_neurons = len(postsynaptic_event)
-
-        # Calculate min stims:
-        common_stims = 10000
-        for neuron in range(num_neurons):
-            if common_stims > postsynaptic_event[neuron][:, :, :].shape[1]:
-                common_stims = postsynaptic_event[neuron][:, :, :].shape[1]
-
-        # Pool data
-        stimpooled_postsynaptic_events = np.ma.array(
-            np.empty([common_stims, 0]))
-
-        for neuron in range(num_neurons):
-            if mask == 'suc':
-                stimpooled_postsynaptic_events = np.ma.append(
-                    stimpooled_postsynaptic_events,
-                    np.ma.transpose(
-                        postsynaptic_event[neuron]
-                        [:, 0:common_stims, pool_index]),
-                    axis=1)
-
-            elif mask == 'all':
-                stimpooled_postsynaptic_events = np.ma.append(
-                    stimpooled_postsynaptic_events,
-                    np.ma.transpose(
-                        postsynaptic_event[neuron]
-                        [:, 0:common_stims, pool_index].data),
-                    axis=1)
-
-        return stimpooled_postsynaptic_events
-
-    def add_sucrate(self, byneuron=False):
-        """Computes postsynaptic event success rates (ie successes / all_stims)
-        and stores this as an attribute .success_rate.
-
-        Parameters
-        ----------------
-        byneuron : bool
-            If False, does not store success rates by neuron.
-
-        Attributes added to class instance
-        ------------
-        self.success_rate : np.ndarray
-            Stores success rate for each stimulus number,
-            pooled across neurons.
-                .success_rate[common_stim, sucrate_stat], where
-                    sucrate_stat=0 : mean
-                    sucrate_stat=1: std. dev.
-                    sucrate_stat=2: standard error of mean.
-
-        Example
-        -------------
-        >>> print(f'mean sucrate for stim 0: {o.success_rate[0, 0]}'
-            mean sucrate for stim 0: 0.8
-        >>> print(f'sem sucrate for stim 2: {o.success_rate[2, 2]}'
-            sem sucrate for stim 2: 0.1
-        """
-        postsynaptic_event = self.mask
-
-        num_neurons = len(postsynaptic_event)
-
-        # Calculate min stims:
-        common_stims = 10000
-        for neuron in range(num_neurons):
-            if common_stims > len(postsynaptic_event[neuron][0, :, 0]):
-                common_stims = len(postsynaptic_event[neuron][0, :, 0])
-
-        success_rate_neur = np.zeros([common_stims, num_neurons])
-        success_rate = np.zeros([common_stims, 3])
-
-        for neuron in range(num_neurons):
-            count_fails_temp = np.sum(
-                postsynaptic_event[neuron][:, 0:common_stims, 0].mask,
-                axis=0)
-            count_total_temp = postsynaptic_event[neuron].shape[0]
-            success_rate_neur[:, neuron] = (
-                count_total_temp - count_fails_temp) / count_total_temp
-
-        success_rate[:, 0] = np.mean(success_rate_neur, axis=1)
-        success_rate[:, 1] = np.std(success_rate_neur, axis=1)
-        success_rate[:, 2] = np.std(success_rate_neur, axis=1) \
-            / np.sqrt(np.sum(success_rate_neur, axis=1))
-
-        if byneuron is True:
-            success_rate = []
-            success_rate = success_rate_neur
-
-        self.success_rate = success_rate
-
-        return self
-
-    def special_sucrate(self, byneuron=False):
-        """Computes special success rate. See add_sucrate() for details.
-        """
-        mask = self.mask
-
-        num_neurons = len(mask)
-
-        # Calculate min stims:
-        common_stims = 10000
-        for neuron in range(num_neurons):
-            if common_stims > len(mask[neuron][0, :]):
-                common_stims = len(mask[neuron][0, :])
-
-        success_rate_neur = np.zeros([common_stims, num_neurons])
-        success_rate = np.zeros([common_stims, 3])
-
-        for neuron in range(num_neurons):
-            count_fails_temp = np.sum(mask[neuron][:, 0:common_stims], axis=0)
-            count_total_temp = mask[neuron].shape[0]
-            success_rate_neur[:, neuron] = (
-                count_total_temp - count_fails_temp) / count_total_temp
-
-        success_rate[:, 0] = np.mean(success_rate_neur, axis=1)
-        success_rate[:, 1] = np.std(success_rate_neur, axis=1)
-        success_rate[:, 2] = np.std(success_rate_neur, axis=1) \
-            / np.sqrt(np.sum(success_rate_neur, axis=1))
-
-        if byneuron is True:
-            success_rate = []
-            success_rate = success_rate_neur
-
-        self.success_rate = success_rate
-
-        return success_rate
+        return
 
     def get_stats(self, arr_name, pooling_index=0, mask='suc'):
         """Computes statistics over all neurons for a given postsynaptic event
@@ -851,606 +1046,6 @@ class EphysObject(object):
                     / np.sqrt(num_nonmasked_stims)
 
         return (stats)
-
-    def _get_median_filtered(signal, threshold=3):
-        """Internal function passed to .add_decay()
-        """
-        if type(signal) is not np.ma.core.MaskedArray:
-            signal = signal.copy()
-            difference = np.abs(signal - np.median(signal))
-            median_difference = np.median(difference)
-            if median_difference == 0:
-                s = 0
-            else:
-                s = difference / float(median_difference)
-
-            mask = s > threshold
-            mask_2 = signal < 0
-            signal[mask] = 0
-            signal[mask_2] = 0
-
-        else:
-            original_mask = signal.mask
-
-            signal = np.array(signal.copy())
-            difference = np.abs(signal - np.median(signal))
-            median_difference = np.median(difference)
-            if median_difference == 0:
-                s = 0
-            else:
-                s = difference / float(median_difference)
-            mask = s > threshold
-            signal[mask] = np.median(signal)
-
-            mask = s > threshold
-            mask_2 = signal < 0
-            signal[mask] = 0
-            signal[mask_2] = 0
-
-            combined_mask_1 = np.ma.mask_or(mask, mask_2)
-            combined_mask_2 = np.ma.mask_or(combined_mask_1, original_mask)
-
-            signal = np.ma.array(signal, mask=combined_mask_2)
-
-        return signal
-
-    def _propagate_mask(self):
-        """Internal function which takes an updated mask of successes/failures
-        stored as self.mask, and uses it to update .ampli, .ampli_norm,
-        .ampli_fails, .latency, .baseline, .decay.
-
-        Called by self.remove_unclamped_aps to propagate a changed mask
-        across all class instance attributes.
-        """
-        postsynaptic_events = self.ampli
-        mask = self.mask
-        num_neurons = len(postsynaptic_events)
-        for neuron in range(num_neurons):
-            for lastind in range(postsynaptic_events[neuron].shape[2]):
-                self.ampli[neuron].mask[:, :, lastind] = mask[neuron]
-                self.ampli_norm[neuron].mask[:, :, lastind] = mask[neuron]
-                self.ampli_fails[neuron].mask[:, :, lastind] = ~mask[neuron]
-
-                if lastind < self.latency[neuron].shape[2]:
-                    self.latency[neuron].mask[:, :, lastind] = mask[neuron]
-                if lastind < self.baseline[neuron].shape[2]:
-                    self.baseline[neuron].mask[:, :, lastind] = mask[neuron]
-                if lastind < self.decay[neuron].shape[2]:
-                    self.decay[neuron].mask[:, :, lastind] = mask[neuron]
-
-    def mask_unclamped_aps(self, thresh=5):
-        """Removes unclamped action potentials from a voltage-clamp recording
-        by masking the appropriate entries in the self.ampli, self.latency and
-        self.ampli_norm attributes.
-
-        Parameters
-        ---------------
-        thresh : float
-            Amplitude threshold for removing action potentials, expressed as
-            fold difference from the normalized (mean) amplitude for that
-            cell/stim.
-            - For example, if thresh=5 and the mean event amplitude was 50pA,
-            any events larger than 250pA would be considered unclamped aps and
-            masked.
-        """
-        ampli_norm = self.ampli_norm
-        ampli = self.ampli
-        latency = self.latency
-
-        num_neurons = len(ampli_norm)
-
-        for neuron in range(num_neurons):
-            to_replace = np.argwhere(
-                ampli_norm[neuron][:, :, 0] > thresh)
-
-            ampli_norm[neuron][to_replace[:, 0],
-                               to_replace[:, 1], :] = np.nan
-            ampli_norm[neuron].mask[to_replace[:, 0],
-                                    to_replace[:, 1], :] = True
-
-            ampli[neuron][to_replace[:, 0], to_replace[:, 1], :] = np.nan
-            ampli[neuron].mask[to_replace[:, 0], to_replace[:, 1], :] = True
-
-            latency[neuron][to_replace[:, 0], to_replace[:, 1], :] = np.nan
-            latency[neuron].mask[to_replace[:, 0], to_replace[:, 1], :] = True
-
-            self.mask[neuron] = np.ma.mask_or(
-                ampli_norm[neuron][:, :, 0].mask,
-                self.ampli[neuron][:, :, 0].mask)
-
-        self._propagate_mask()
-
-        print('\nMasked APs')
-
-    def add_decay(self, t_prestim=0, t_poststim=10, plotting=False,
-                  fn='monoexp_normalized_plusb'):
-        """Fits each post-synaptic event with an exponential decay fuction
-        and stores the fitted parameters in self.decay.
-
-        Decay equation variables correspond to the fitted variables for
-        the equation used (see the kwarg fn for more info).
-        - monoexponential decay: lambda1, b.
-        - biexponential decay: lambda1, lambda2, vstart2, b.
-
-        Parameters
-        ------------
-        prestim : float
-            Time before stimulus, in ms, to include in signal
-            used to compute decay.
-
-        poststim : float
-            Time after stimulus, in ms, to include in signal
-            used to compute decay.
-
-        plotting : bool
-            Whether to plot examples of decay fits (True) or not (False).
-
-        fn : str
-            Exponential decay function to use.
-            - 'monoexp_normalized_plusb': y = e^(-t * lambda1) + b
-            - 'biexp_normalized_plusb': y = e^(-t * lambda1)
-                + vstart * e^(-t / lambda2) + b
-
-            (In all cases, the more traditional decay tau can be computed
-            as tau= 1/lambda).
-
-        Attributes added
-        ------------
-        self.decay : np.ndarray
-            An array of fitted decay parameters.
-                .decay[neuron][trial, stim, decay_param].
-
-                - If fn='monoexp_normalized_plusb', then
-                    decay_param=0 : lambda1
-                    decay_param=1 : b
-
-                - If fn='biexp_normalized_plusb', then
-                    decay_param=0 : lambda1
-                    decay_param=1 : lambda2
-                    decay_param=2 : vstart2
-                    decay_param=3 : b
-        """
-
-        # Import variables from synappy wrapper
-        analog_signals = self.analog_signals
-        postsynaptic_events = self.ampli
-        baseline = self.baseline
-        times = self.times
-
-        num_neurons = len(postsynaptic_events)
-
-        def biexp_normalized_plusb(time_x, lambda1, lambda2, vstart2, b):
-            y = np.exp(time_x * (-1) * lambda1) \
-                + vstart2 * np.exp(time_x * (-1) * lambda2) + b
-            return y
-
-        def monoexp_normalized_plusb(time_x, lambda1, b):
-            y = np.exp(time_x * (-1) * lambda1) + b
-            return y
-
-        if fn == 'monoexp_normalized_plusb':
-            num_vars = 2
-            vars_guess = [100, 0]
-        elif fn == 'biexp_normalized_plusb':
-            num_vars = 4
-            vars_guess = [100, 100, 1, 0]
-
-        fitted_vars = np.empty(num_neurons, dtype=np.ndarray)
-        fitted_covari = np.empty_like(fitted_vars)
-
-        for neuron in range(num_neurons):
-            sample_rate = np.int32(np.round(
-                1 / (times[neuron][1] - times[neuron][0])))
-            prestim_ind = np.int32(t_prestim * sample_rate / 1000)
-            poststim_ind = np.int32(t_poststim * sample_rate / 1000)
-
-            num_trials = postsynaptic_events[neuron].shape[0]
-            num_stims = postsynaptic_events[neuron].shape[1]
-
-            if type(postsynaptic_events[neuron]) is np.ma.core.MaskedArray:
-                fitted_vars[neuron] = np.ma.array(np.empty(
-                    [num_trials, num_stims, num_vars], dtype=np.ndarray))
-                fitted_vars[neuron].mask = postsynaptic_events[neuron].mask
-                fitted_covari[neuron] = np.ma.array(np.empty(
-                    [num_trials, num_stims, num_vars], dtype=np.ndarray))
-                fitted_covari[neuron].mask = postsynaptic_events[neuron].mask
-
-            else:
-                fitted_vars[neuron] = np.empty(
-                    [num_trials, num_stims, num_vars], dtype=np.ndarray)
-                fitted_covari[neuron] = np.empty(
-                    [num_trials, num_stims, num_vars], dtype=np.ndarray)
-
-            for trial in range(num_trials):
-                for stim in range(num_stims):
-
-                    if (type(postsynaptic_events[neuron])
-                            == np.ma.core.MaskedArray and
-                            postsynaptic_events[neuron][trial, stim, 0] is not
-                            np.ma.masked):
-
-                        event_ind_min = postsynaptic_events[neuron][
-                            trial, stim, 1] - prestim_ind
-                        event_ind_max = event_ind_min + poststim_ind
-
-                        postsynaptic_curve = analog_signals[neuron][
-                            trial, event_ind_min:event_ind_max] \
-                            - baseline[neuron][trial, stim, 0]
-                        postsynaptic_curve /= np.mean(postsynaptic_curve[0:2])
-
-                        times_forfit = times[neuron][0:poststim_ind]
-
-                        try:
-                            [popt, pcov] = sp_opt.curve_fit(
-                                monoexp_normalized_plusb, times_forfit,
-                                postsynaptic_curve, p0=vars_guess)
-
-                        except RuntimeError:
-                            popt = np.ones(num_vars) * 10000
-                            pcov = 10000
-
-                        except ValueError:
-                            print(postsynaptic_curve, 'neuron: ', neuron,
-                                  'trial: ', trial, 'stim: ', stim)
-
-                        fitted_vars[neuron][trial, stim, :] = popt[:]
-
-                    elif (type(postsynaptic_events[neuron])
-                          == np.ma.core.MaskedArray and
-                          postsynaptic_events[neuron][trial, stim, 0] is
-                          np.ma.masked):
-
-                        fitted_vars[neuron][trial, stim, :] = np.ones(
-                            num_vars) * 10000
-                        fitted_vars[neuron][trial, stim, :].mask = np.ones(
-                            num_vars, dtype=np.bool)
-
-                    elif (type(postsynaptic_events[neuron]) is not
-                          np.ma.core.MaskedArray):
-                        event_ind_min = postsynaptic_events[neuron][
-                            trial, stim, 1] - prestim_ind
-                        event_ind_max = event_ind_min + poststim_ind
-
-                        postsynaptic_curve = analog_signals[neuron][
-                            trial, event_ind_min:event_ind_max] \
-                            - baseline[neuron][trial, stim, 0]
-                        postsynaptic_curve /= postsynaptic_curve[0]
-
-                        times_forfit = times[neuron][0:poststim_ind]
-
-                        try:
-                            [popt, pcov] = sp_opt.curve_fit(
-                                monoexp_normalized_plusb, times_forfit,
-                                postsynaptic_curve, p0=vars_guess)
-
-                        except RuntimeError:
-                            popt = np.ones(num_vars) * 10000
-
-                        fitted_vars[neuron][trial, stim, :] = popt[:]
-
-            if plotting is True:
-                if type(postsynaptic_events[neuron]) == np.ma.core.MaskedArray:
-                    first_nonmasked_trial = (np.argwhere(
-                        postsynaptic_events[neuron][:, 0, 1].mask is False)
-                                             [0][0])
-
-                    postsynaptic_curve = (analog_signals[neuron][
-                        first_nonmasked_trial,
-                        postsynaptic_events[neuron]
-                        [first_nonmasked_trial, 0, 1] - prestim_ind:
-                        postsynaptic_events[neuron]
-                        [first_nonmasked_trial, 0, 1] + poststim_ind]
-                        - baseline[neuron][first_nonmasked_trial, 0, 0])
-
-                    y_fitted = (postsynaptic_events[neuron]
-                                [first_nonmasked_trial, 0, 0]
-                                * monoexp_normalized_plusb(
-                                    times[neuron][0:poststim_ind + prestim_ind],
-                                    fitted_vars[neuron][
-                                        first_nonmasked_trial, 0, 0],
-                                    fitted_vars[neuron][
-                                        first_nonmasked_trial, 0, 1]))
-
-                    plt.figure()
-                    plt.plot(times[neuron][0:poststim_ind + prestim_ind],
-                             y_fitted, 'r')
-                    plt.plot(times[neuron][0:poststim_ind + prestim_ind],
-                             postsynaptic_curve, 'b')
-
-                elif type(postsynaptic_events[neuron]) is np.array:
-                    postsynaptic_curve = (analog_signals[neuron]
-                                          [0, postsynaptic_events[neuron]
-                                           [0, 0, 1] - prestim_ind:
-                                           postsynaptic_events[neuron][0, 0, 1]
-                                           + poststim_ind]
-                                          - baseline[neuron][0, 0, 0])
-                    y_fitted = (postsynaptic_events[neuron][0, 0, 0]
-                                * monoexp_normalized_plusb(
-                                    times[neuron][0:poststim_ind + prestim_ind],
-                                    fitted_vars[neuron][0, 0, 0],
-                                    fitted_vars[neuron][0, 0, 1]))
-                    plt.figure()
-                    plt.plot(times[neuron][0:poststim_ind + prestim_ind],
-                             y_fitted, 'r')
-                    plt.plot(times[neuron][0:poststim_ind + prestim_ind],
-                             postsynaptic_curve, 'b')
-
-            # convert from lambda to tau
-            fitted_ones = np.ones([fitted_vars[neuron][:, :, 0].shape[0],
-                                   fitted_vars[neuron][:, :, 0].shape[1]])
-
-            if type(postsynaptic_events[neuron]) is np.ma.core.MaskedArray:
-                fitted_vars[neuron][:, :, 0] = fitted_ones / np.array(
-                    fitted_vars[neuron][:, :, 0])
-                fitted_vars[neuron][:, :, 0] = _get_median_filtered(
-                    fitted_vars[neuron][:, :, 0], threshold=10)
-                fittedvarmask = np.ma.mask_or(
-                    postsynaptic_events[neuron][:, :, 0].mask,
-                    fitted_vars[neuron][:, :, 0].mask)
-                fitted_vars[neuron][:, :, 0].mask = fittedvarmask
-
-            else:
-                fitted_vars[neuron][:, :, 0] = (fitted_ones
-                                                / fitted_vars[neuron][:, :, 0])
-                fitted_vars[neuron][:, :, 0] = _get_median_filtered(
-                    fitted_vars[neuron][:, :, 0], threshold=10)
-
-        self.decay = fitted_vars
-
-        print('\nAdded decay')
-
-        return
-
-    def add_integral(self, t_integral=1000, cdf_bins=100):
-        """
-        Compute the integral for each post-synaptic event.
-
-        Parameters
-        -----------------
-        t_integral : float
-            The total post-stimulus time to integrate, in milliseconds.
-
-        cdf_bins : int
-            Number of bins for the cumulative integral
-
-
-        Attributes added
-        ------------
-        self.integral : np.ndarray
-            An array of integral values (mV*sec or pA*sec).
-                .integral[neuron][trial, stim]
-        self.integral_cdf : np.ndarray
-            An array containing the cumulative distribution of the integral,
-            with bins=cdf_bins, over the entire t_integral time. (units are
-            fractional integral from 0->1.)
-                .integral_cdf[neuron][trial, stim][cdf_bin]
-        """
-
-        analog_signals = self.analog_signals
-        postsynaptic_events = self.ampli
-        baseline = self.baseline
-        times = self.times
-        stim_on = self.stim_on
-
-        num_neurons = len(analog_signals)
-
-        integral = np.empty(num_neurons, dtype=np.ndarray)
-        cdf_integral = np.empty(num_neurons, dtype=np.ndarray)
-
-        # Iterate through neurons, trials and stims
-        for neuron in range(num_neurons):
-            sample_rate = np.int32(
-                np.round(1 / (times[neuron][1] - times[neuron][0])))
-
-            # Calculate number of trials and fill in integral
-            num_trials = postsynaptic_events[neuron].shape[0]
-            num_stims = postsynaptic_events[neuron].shape[1]
-            integral[neuron] = np.zeros([num_trials, num_stims])
-            cdf_integral[neuron] = np.zeros(
-                [num_trials, num_stims, int(cdf_bins)])
-
-            # Integral calculation
-            for trial in range(num_trials):
-                for stim in range(num_stims):
-                    int_start = int(stim_on[neuron][stim])
-                    int_end = int((t_integral/1000) * sample_rate + int_start)
-
-                    analog_toint = (
-                        analog_signals[neuron][trial, int_start:int_end]
-                        - baseline[neuron][trial, stim, 0])
-                    time_toint = times[neuron][int_start:int_end]
-                    integral[neuron][trial] = sp_integrate.trapz(
-                        analog_toint, time_toint)
-
-                    # Cumulative distribution
-                    for nbin in range(cdf_bins):
-                        nbin_plusone = nbin + 1
-                        curr_cdf_fraction = nbin_plusone / cdf_bins
-
-                        int_start = int(stim_on[neuron][stim])
-                        int_end = int(
-                            int_start + ((t_integral/1000) * sample_rate)
-                            * curr_cdf_fraction)
-
-                        analog_toint = (analog_signals[neuron][
-                            trial, int_start:int_end]
-                                        - baseline[neuron][trial, stim, 0])
-                        time_toint = times[neuron][int_start:int_end]
-
-                        cdf_integral[neuron][trial, stim, nbin] = (
-                            sp_integrate.trapz(analog_toint, time_toint)
-                            / integral[neuron][trial, stim])
-
-        self.integral = integral
-        self.cdf_integral = cdf_integral
-        print('\nAdded integral')
-
-        return
-
-    def add_norm_integral(self, t_integral=1000,
-                          cdf_bins=100):
-        """
-        Compute the normalized integral for each post-synaptic event.
-        Integrals are normalized to the mean integral value for that
-        stimulus delivered to that particular neuron, and are stored
-        in .norm_integral and .norm_cdf_integral.
-
-        Parameters
-        -----------------
-        t_integral : float
-            The total post-stimulus time to integrate, in milliseconds.
-
-        cdf_bins : int
-            Number of bins for the cumulative integral
-
-        Attributes added
-        ------------
-        self.norm_integral : np.ndarray
-            An array of normalized integral values ().
-                .norm_integral[neuron][trial, stim]
-        self.norm_integral_cdf : np.ndarray
-            An array containing the cumulative distribution of the integral,
-            with bins=cdf_bins, over the entire t_integral time. (units are
-            fractional integral from 0->1.)
-                .integral_cdf[neuron][trial, stim][cdf_bin]
-        """
-
-        # Import needed vars from self
-        analog_signals = self.analog_signals
-        postsynaptic_events = self.ampli
-        baseline = self.baseline
-        times = self.times
-        stim_on = self.stim_on
-
-        # Define number of neurons
-        num_neurons = len(analog_signals)
-
-        # Predefine vars
-        integral = np.empty(num_neurons, dtype=np.ndarray)
-        cdf_integral = np.empty(num_neurons, dtype=np.ndarray)
-
-        # Iterate through neurons, trials and stims
-        for neuron in range(num_neurons):
-            sample_rate = np.int32(
-                np.round(1 / (times[neuron][1] - times[neuron][0])))
-
-            # Calculate number of trials and fill in integral
-            num_trials = postsynaptic_events[neuron].shape[0]
-            num_stims = postsynaptic_events[neuron].shape[1]
-            integral[neuron] = np.zeros([num_trials, num_stims])
-            cdf_integral[neuron] = np.zeros(
-                [num_trials, num_stims, int(cdf_bins)])
-
-            for trial in range(num_trials):
-                for stim in range(num_stims):
-                    int_start = int(stim_on[neuron][stim])
-                    int_end = int((t_integral/1000) * sample_rate + int_start)
-
-                    analog_toint = ((analog_signals[neuron]
-                                    [trial, int_start:int_end]
-                                    - baseline[neuron][trial, stim, 0])
-                                    / postsynaptic_events[neuron]
-                                    [trial, stim, 0])
-                    time_toint = times[neuron][int_start:int_end]
-                    integral[neuron][trial] = sp_integrate.trapz(
-                        analog_toint, time_toint)
-
-                    # Calculate cumulative distribution of integral
-                    for nbin in range(cdf_bins):
-                        nbin_plusone = nbin + 1
-                        curr_cdf_fraction = nbin_plusone / cdf_bins
-
-                        int_start = int(stim_on[neuron][stim])
-                        int_end = int(int_start
-                                      + ((t_integral/1000) * sample_rate)
-                                      * curr_cdf_fraction)
-
-                        analog_toint = (analog_signals[neuron]
-                                        [trial, int_start:int_end]
-                                        - baseline[neuron][trial, stim, 0])
-                        time_toint = times[neuron][int_start:int_end]
-
-                        cdf_integral[neuron][trial, stim, nbin] \
-                            = sp_integrate.trapz(
-                                analog_toint, time_toint) / integral[
-                                    neuron][trial, stim]
-
-        self.norm_integral = integral
-        self.norm_cdf_integral = cdf_integral
-        print('\nAdded norm. integral')
-
-        return
-
-    def add_all(self, kwargs_add_ampli={'event_sign': 'pos'},
-                kwargs_add_integral={},
-                kwargs_add_decay={},
-                kwargs_mask_unclamped_aps=False,
-                kwargs_add_sucfail_sorting=False):
-        """
-        Convenience method which takes an initialized EphysObject with
-        a .stim_on attribute (stimulus onsets), and quantifies
-        several postsynaptic event attributes by calling the following
-        class methods:
-
-            - amplitude (.ampli, .norm_ampli, .baseline,
-            .latency) by calling the .add_ampli() method.
-            - integral (.norm_integral, .norm_cdf_integral)
-            by calling the .add_integral() method
-            - decays (.decay) by calling the .add_decay() method.
-
-        The following methods are optionally called by setting the
-        associated kwargs to a dictionary, instead of the default of False:
-            - masking unclamped action potentials through the
-            .mask_unclamped_aps() method.
-            - successes and failure sorting (.mask, used to create an
-            array maksing failures within .ampli, .baseline, .latency) through
-            the .add_sucfail_sorting() method
-
-        Parameters
-        -----------------
-        kwargs_add_ampli : dict
-            Dictionary of keyword arguments to be passed to the .add_ampli()
-            method. The docstring for .add_ampli() contains more details.
-            - event_sign can be 'pos' or 'neg' depending on the polarity of
-            responses under investigation.
-
-        kwargs_add_integral : dict
-            Dictionary of keyword arguments to be passed to the .add_integral()
-            method. The docstring for .add_integral() contains more details.
-
-        kwargs_add_decay : dict
-            Dictionary of keyword arguments to be passed to the .add_decay()
-            method. The docstring for .add_decay() contains more details.
-
-        kwargs_mask_unclamped_aps : bool or dict
-            If False, does not mask unclamped action potentials with the
-            .mask_unclamped_aps() method.
-            If a dict, masks unclamped aps using the dict as kwargs to
-            .mask_unclamped_aps().
-
-        kwargs_add_sucfail_sorting : bool or dict
-            If False, does not add success/failure sorting of events.
-            If a dict, adds suc/fail sorting to events, using the
-            dict as kwargs to .add_sucfail_sorting().
-
-        Attributes added
-        ------------
-        See .add_ampli(), .add_integral(), .add_decay(),
-        .mask_unclamped_aps() and .add_sucfail_sorting() for more info on the
-        particular attributes added.
-        """
-
-        self.add_ampli(**kwargs_add_ampli)
-        self.add_integral(**kwargs_add_integral)
-        self.add_decay(**kwargs_add_decay)
-
-        if type(kwargs_mask_unclamped_aps) is dict:
-            self.mask_unclamped_aps(**kwargs_mask_unclamped_aps)
-
-        if type(kwargs_add_sucfail_sorting) is dict:
-            self.add_sucfail_sorting(**kwargs_add_sucfail_sorting)
-
-        return
 
     def plot_attribute(self, arr_name,
                        ylim=False, by_neuron=False,
@@ -1576,3 +1171,392 @@ class EphysObject(object):
                 xlim_curr = ax.get_xlim()
 
                 plt.show()
+
+    def mask_unclamped_aps(self, thresh=5):
+        """Removes unclamped action potentials from a voltage-clamp recording
+        by masking the appropriate entries in the self.ampli, self.latency and
+        self.ampli_norm attributes.
+
+        Parameters
+        ---------------
+        thresh : float
+            Amplitude threshold for removing action potentials, expressed as
+            fold difference from the normalized (mean) amplitude for that
+            cell/stim.
+            - For example, if thresh=5 and the mean event amplitude was 50pA,
+            any events larger than 250pA would be considered unclamped aps and
+            masked.
+        """
+        num_neurons = len(self.ampli_norm.data)
+
+        for neuron in range(num_neurons):
+            to_replace = np.argwhere(
+                self.ampli_norm.data[neuron][:, :, 0] > thresh)
+
+            self.ampli_norm.data[neuron][to_replace[:, 0],
+                                         to_replace[:, 1], :] = np.nan
+            self.ampli_norm.data[neuron].mask[to_replace[:, 0],
+                                              to_replace[:, 1], :] = True
+
+            self.ampli.data[neuron][to_replace[:, 0],
+                                    to_replace[:, 1], :] = np.nan
+            self.ampli.data[neuron].mask[to_replace[:, 0],
+                                         to_replace[:, 1], :] = True
+
+            self.latency.data[neuron][to_replace[:, 0],
+                                      to_replace[:, 1], :] = np.nan
+            self.latency.data[neuron].mask[to_replace[:, 0],
+                                           to_replace[:, 1], :] = True
+
+            self.mask[neuron] = self.ampli.data[neuron].mask
+
+        self._propagate_mask()
+
+        print('Masked APs')
+        return
+
+    def _from_t_to_ind(self, t, neur, t_format='ms'):
+        """Converts a time, in ms, to an index, using a
+        known sampling rate.
+
+        Parameters
+        ------------
+        t : float
+            Time in either seconds or milliseconds.
+
+        neur : ind
+            Index of current neuron. Used to fetch sampling rate
+            (self._sampling_rate[neur]).
+
+        t_format : str
+            Whether time is in milliseconds 'ms' or seconds 's'
+
+        Returns
+        -----------
+        """
+        if t_format == 'ms':
+            t /= 1000
+
+        ind = int(t * self._sampling_rate[neur])
+
+        return ind
+
+    def _get_median_filtered(signal, threshold=3):
+        """Internal function passed to .add_decay()
+        """
+        if type(signal) is not np.ma.core.MaskedArray:
+            signal = signal.copy()
+            difference = np.abs(signal - np.median(signal))
+            median_difference = np.median(difference)
+            if median_difference == 0:
+                s = 0
+            else:
+                s = difference / float(median_difference)
+
+            mask = s > threshold
+            mask_2 = signal < 0
+            signal[mask] = 0
+            signal[mask_2] = 0
+
+        else:
+            original_mask = signal.mask
+
+            signal = np.array(signal.copy())
+            difference = np.abs(signal - np.median(signal))
+            median_difference = np.median(difference)
+            if median_difference == 0:
+                s = 0
+            else:
+                s = difference / float(median_difference)
+            mask = s > threshold
+            signal[mask] = np.median(signal)
+
+            mask = s > threshold
+            mask_2 = signal < 0
+            signal[mask] = 0
+            signal[mask_2] = 0
+
+            combined_mask_1 = np.ma.mask_or(mask, mask_2)
+            combined_mask_2 = np.ma.mask_or(combined_mask_1, original_mask)
+
+            signal = np.ma.array(signal, mask=combined_mask_2)
+
+        return signal
+
+    def _propagate_mask(self):
+        """Internal function which takes an updated mask of successes/failures
+        stored as self.mask, and uses it to update .ampli, .ampli_norm,
+        .ampli_fails, .latency, .baseline, .decay.
+
+        (everything stored in ._all_stats is updated).
+
+        Called by self.remove_unclamped_aps to propagate a changed mask
+        across all class instance attributes.
+        """
+        n_neurons = self.ampli.data.shape[0]
+
+        for stat in self._all_stats:
+            for neuron in range(n_neurons):
+                # check that this is a masked array
+                if type(stat[neuron]) == np.ndarray:
+                    stat[neuron] = np.ma.array(stat[neuron])
+
+                _updated_mask = np.logical_or(stat[neuron].mask,
+                                              self.mask[neuron])
+
+                # update stat
+                stat[neuron].mask = _updated_mask
+
+        return
+
+    def __check_for_events(self):
+        """Checks whether the .events attribute exists, and if it does not,
+        returns an Exception.
+
+        Called before most class methods.
+        """
+        if hasattr(self, 'events'):
+            pass
+        else:
+            raise Exception('No .events attribute exists. It must be first ' +
+                            'added using the class method .add_events().')
+
+        return
+
+    def __check_for_ampli(self):
+        """Checks whether the .ampli attribute exists, and if it does not,
+        returns an Exception.
+
+        Called before some class methods that require .ampli.
+        """
+        if hasattr(self, 'ampli'):
+            pass
+        else:
+            raise Exception('No .ampli attribute exists. It must be first ' +
+                            'added using the class method .add_ampli().')
+
+        return
+
+
+class PreviewEphysObject(object):
+    def __init__(self, ephysobj, neur,
+                 attrs=None,
+                 figsize=(10, 7),
+                 _color_reg=[0.65, 0.65, 0.65],
+                 _color_bold=[0.0118, 0.443, 0.612],
+                 _color_mean=[0.980, 0.259, 0.141]):
+        """Simple class that takes an EphysObject and neuron index as input
+        and plots signals and associated attributes added
+        this recording (eg amplitude, baseline, etc.)
+
+        Parameters
+        ------------
+        ephysobj : EphysObject
+            The EphysObject instance to plot.
+
+        neur : ind
+            Index of neuron within EphysObject to plot.
+
+        attr : None or str
+            If None, no data attribute is plotted.
+            If str, the following are accepted for attr,
+            corresponding to attributes of the EphysObject instance:
+                'ampli'
+                'latency'
+                'baseline'
+                'decay'
+                'integral'
+        """
+        # Load data and initialize variables
+        self._color_reg = _color_reg
+        self._color_bold = _color_bold
+        self._color_mean = _color_mean
+
+        self.neur = neur
+        self.figsize = figsize
+        self.ephysobj = ephysobj
+
+        self.attrs = attrs
+        self.n_attrs = len(attrs)
+        self.attr_data = np.empty(self.n_attrs, dtype=np.ndarray)
+        self.attr_inds = np.empty(self.n_attrs, dtype=np.ndarray)
+        for ind, attr in enumerate(self.attrs):
+            if attr == 'ampli' or attr == 'latency'
+            self.attr_data[ind_attr] = getattr(self.ephysobj, self.attr)
+
+        plt.ion()
+        mpl.style.use('fast')
+        mpl.rcParams["path.simplify_threshold"] = 1.0
+        mpl.rcParams["axes.spines.top"] = False
+        mpl.rcParams["axes.spines.right"] = False
+
+        self.n_trials = ephysobj.sig[neur].shape[0]
+
+    def plot(self):
+        # Setup figure, gridspec and axs
+        self.fig = plt.figure(figsize=self.figsize,
+                              constrained_layout=True)
+        height_ratios = [4, 1, 0.2]
+
+        spec = gs.GridSpec(nrows=3, ncols=15,
+                           figure=self.fig,
+                           height_ratios=height_ratios)
+
+        self.ax = []
+        self.ax.append(self.fig.add_subplot(spec[0, :]))
+        self.ax.append(self.fig.add_subplot(spec[1, :],
+                                            sharex=self.ax[0]))
+
+        # plot analog signals
+        self.lines = np.empty(2, dtype=np.ndarray)
+        self.lines_mean = np.empty(2, dtype=np.ndarray)
+        self.mean = np.empty(2, dtype=np.ndarray)
+
+        # .sig (main analog signal)
+        self.lines[0] = np.empty(self.n_trials, dtype=object)
+        self.ax[0].set_ylabel(f'{self.ephysobj.sig_units}')
+
+        for trial in range(self.n_trials):
+            self.lines[0][trial] = self.ax[0].plot(
+                self.ephysobj.t[self.neur],
+                self.ephysobj.sig[self.neur][trial, :],
+                color=self._color_reg,
+                linewidth=0.5)
+
+            self.mean[0] = np.mean(self.ephysobj.sig[self.neur],
+                                   axis=0)
+
+        # .sig_stim (signal for stimulus channel)
+        self.lines[1] = np.empty(self.n_trials, dtype=object)
+        self.ax[1].set_ylabel('stim')
+
+        for trial in range(self.n_trials):
+            self.lines[1][trial] = self.ax[1].plot(
+                self.ephysobj.t[self.neur],
+                self.ephysobj.sig_stim[self.neur],
+                color=self._color_reg,
+                linewidth=0.5)
+
+            self.mean[1] = self.ephysobj.sig_stim[self.neur]
+
+        self.ax[-1].set_xlabel('time (s)')
+
+        # buttons and callback
+        self._curr_trial = 0
+        self._mean_plotted = False
+
+        ax_but_next = self.fig.add_subplot(
+            spec[-1, 12:15])
+        ax_but_next.set_zorder(10000)
+
+        ax_but_prev = self.fig.add_subplot(
+            spec[-1, 9:12])
+        ax_but_prev.set_zorder(10000)
+
+        ax_but_mean = self.fig.add_subplot(
+            spec[-1, 7:9])
+
+        self.buttons = SimpleNamespace()
+
+        self.buttons.next = Button(ax_but_next, 'Next')
+        self.buttons.next.on_clicked(self.on_next)
+
+        self.buttons.prev = Button(ax_but_prev, 'Prev')
+        self.buttons.prev.on_clicked(self.on_prev)
+
+        self.buttons.mean = Button(ax_but_mean, 'Avg.')
+        self.buttons.mean.on_clicked(self.on_mean)
+
+        self.bold_trial(self._curr_trial)
+        self.add_attr_for_trial(self._curr_trial)
+
+        # add text
+        self.text = self.fig.text(0.05, 0.03,
+                                  s=f'neur: {self.neur} | ' +
+                                  f'trial: {self._curr_trial}',
+                                  fontweight='bold',
+                                  fontsize='medium',
+                                  color=[0, 0, 0])
+        plt.show()
+
+        return
+
+    def update_curr_trial_next(self):
+        if self._curr_trial >= self.n_trials - 1:
+            self._curr_trial = 0
+        else:
+            self._curr_trial += 1
+
+    def update_curr_trial_prev(self):
+        if self._curr_trial <= 0:
+            self._curr_trial = self.n_trials - 1
+        else:
+            self._curr_trial -= 1
+
+    def on_next(self, event):
+        self.unbold_trial(self._curr_trial)
+        self.update_curr_trial_next()
+        self.bold_trial(self._curr_trial)
+
+        self.update_trialtext()
+
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
+
+    def on_prev(self, event):
+        self.unbold_trial(self._curr_trial)
+        self.update_curr_trial_prev()
+        self.bold_trial(self._curr_trial)
+
+        self.update_trialtext()
+
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
+
+    def on_mean(self, event):
+        if self._mean_plotted is False:
+            # main signal
+            self.lines_mean[0] = self.ax[0].plot(
+                self.ephysobj.t[self.neur],
+                self.mean[0],
+                color=self._color_mean,
+                linewidth=1.5)
+            # stim signal
+            self.lines_mean[1] = self.ax[1].plot(
+                self.ephysobj.t[self.neur],
+                self.mean[1],
+                color=self._color_mean,
+                linewidth=1.5)
+            self._mean_plotted = True
+
+        elif self._mean_plotted is True:
+            for sig in range(2):
+                self.lines_mean[sig][0].remove()
+            self._mean_plotted = False
+
+        self.fig.canvas.draw_idle()
+
+    def bold_trial(self, trial):
+        # main signal
+        self.lines[0][trial][0].remove()
+        self.lines[0][trial] = self.ax[0].plot(
+            self.ephysobj.t[self.neur],
+            self.ephysobj.sig[self.neur][trial, :],
+            color=self._color_bold,
+            linewidth=0.8)
+
+    def unbold_trial(self, trial):
+        # main signal
+        self.lines[0][trial][0].remove()
+        self.lines[0][trial] = self.ax[0].plot(
+            self.ephysobj.t[0],
+            self.ephysobj.sig[self.neur][trial, :],
+            color=self._color_reg,
+            linewidth=0.5)
+
+    def add_attr_for_trial(self, trial):
+        
+
+    def update_trialtext(self):
+        self.text.set_text(f'neur: {self.neur} | ' +
+                           f'trial: {self._curr_trial}')

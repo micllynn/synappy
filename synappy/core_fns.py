@@ -4,14 +4,15 @@ import numpy as np
 import scipy as sp
 
 
-def find_stims(ephysobj, thresh):
+def find_stim_events(ephysobj, thresh):
     """
     Finds stimulus onsets from an EphysObject class instance.
 
     Parameters
     ---------------
     ephysobj : EphysObject
-        An EphysObject class instance with analog_signals and stim_signals.
+        An EphysObject class instance with analog signals (.sig) and
+        stim signals (.sig_stim).
 
     thresh: float
         Stimulus threshold, typically in volts (stimulus channel unit).
@@ -19,48 +20,48 @@ def find_stims(ephysobj, thresh):
 
     Returns
     -------------
-    stim_on : np.ndarray
-        Array with format stim_on[n_neur][n_trial][stim_ind],
+    events : np.ndarray
+        Array with format events[n_neur][n_trial][stim_ind],
         where stim_ind is the stimulus onset index for a particular
         neuron and trial.
     """
 
-    num_neurons = len(ephysobj.analog_signals)
-    stim_on = np.empty(num_neurons, dtype=np.ndarray)
+    num_neurons = len(ephysobj.sig)
+    events = np.empty(num_neurons, dtype=np.ndarray)
 
     for neuron in range(num_neurons):
-        num_trials = ephysobj.analog_signals[neuron].shape[0]
+        num_trials = ephysobj.sig[neuron].shape[0]
 
-        stim_on[neuron] = np.empty(num_trials, dtype=np.ndarray)
+        events[neuron] = np.empty(num_trials, dtype=np.ndarray)
 
         # Fill trial 0 with first stim crossings
         all_crossings = np.where(
-            ephysobj.stim_signals[neuron] > thresh)[0]
-        stim_on[neuron][0] = np.array([all_crossings[0]])
+            ephysobj.sig_stim[neuron] > thresh)[0]
+        events[neuron][0] = np.array([all_crossings[0]])
 
         for crossing_ind in np.arange(1, len(all_crossings)):
             if all_crossings[crossing_ind -
                              1] != all_crossings[crossing_ind] - 1:
-                stim_on[neuron][0] = np.append(stim_on[neuron][0],
-                                               all_crossings[crossing_ind])
+                events[neuron][0] = np.append(events[neuron][0],
+                                              all_crossings[crossing_ind])
 
         # Now fill all trials with trial 0
         for trial in np.arange(1, num_trials):
-            stim_on[neuron][trial] = stim_on[neuron][0]
+            events[neuron][trial] = events[neuron][0]
 
-    print('\nAdded stim_on:')
+    print('Event counts:')
     for neuron in range(num_neurons):
-        print('\tNeuron ', neuron, ': ', len(stim_on[neuron][0]), ' event(s)')
+        print('\tNeuron ', neuron, ': ', len(events[neuron][0]), ' event(s)')
 
-    return stim_on
+    return events
 
 
-def find_spontaneous(ephysobj,
-                     filt_size=501,
-                     savgol_polynomial=3,
-                     thresh_ampli=3,
-                     thresh_deriv=-1.2,
-                     thresh_pos_deriv=0.1):
+def find_spontaneous_events(ephysobj,
+                            filt_size=501,
+                            savgol_polynomial=3,
+                            thresh_ampli=3,
+                            thresh_deriv=-1.2,
+                            thresh_pos_deriv=0.1):
     """
     Finds spontaneous synaptic events from an EphysObject class instance.
     Called by ephysobj.find_stims().
@@ -74,7 +75,7 @@ def find_spontaneous(ephysobj,
         a first derivative threshold specified by thresh_deriv.
         3. Iterate through each crossing. If the crossing also has
         a minimum amplitude of thresh_ampli, then store the event index
-        in stim_on[neur][trial][event_ind].
+        in events[neur][trial][event_ind].
         4. For the current event, compute when the derivative next
         crosses thresh_pos_deriv, corresponding to entering the decay
         phase of the event. The next detected event can only occur
@@ -83,7 +84,7 @@ def find_spontaneous(ephysobj,
     Parameters
     ---------------
     ephysobj : EphysObject
-        An EphysObject class instance with analog_signals and stim_signals.
+        An EphysObject class instance with analog_signals and sig_stim.
 
     filt_size : int
         Filter size of savgol filter, in indices. Must be odd.
@@ -107,23 +108,23 @@ def find_spontaneous(ephysobj,
 
     Returns
     -------------
-    stim_on : np.ndarray
-        Array with format stim_on[n_neur][n_trial][spont_event_ind],
+    events : np.ndarray
+        Array with format events[n_neur][n_trial][spont_event_ind],
         where spont_event_ind is the spontaneous event index for a
         particular neuron and trial.
     """
 
-    num_neurons = len(ephysobj.analog_signals)
-    stim_on = np.empty(num_neurons, dtype=np.ndarray)
+    num_neurons = len(ephysobj.sig)
+    events = np.empty(num_neurons, dtype=np.ndarray)
 
     for neuron in range(num_neurons):
-        num_trials = ephysobj.analog_signals[neuron].shape[0]
-        stim_on[neuron] = np.empty(num_trials, dtype=np.ndarray)
+        num_trials = ephysobj.sig[neuron].shape[0]
+        events[neuron] = np.empty(num_trials, dtype=np.ndarray)
 
         for trial in range(num_trials):
-            stim_on[neuron][trial] = np.zeros(1)
+            events[neuron][trial] = np.zeros(1)
             trial_analog = sp.signal.savgol_filter(
-                ephysobj.analog_signals[neuron][trial, :],
+                ephysobj.sig[neuron][trial, :],
                 filt_size, savgol_polynomial)
             trial_gradient = np.gradient(trial_analog)
 
@@ -167,30 +168,30 @@ def find_spontaneous(ephysobj,
                 if event_start[ind + 1] < current_event_finish:
                     event_start.mask[ind] = True
 
-            stim_on[neuron][trial] = event_start.compressed().astype(np.int32)
+            events[neuron][trial] = event_start.compressed().astype(np.int32)
 
             # Delete low and high components of the signal
-            to_delete_low = np.where(stim_on[neuron][trial] < 1600)
-            stim_on[neuron][trial] = np.delete(stim_on[neuron][trial],
+            to_delete_low = np.where(events[neuron][trial] < 1600)
+            events[neuron][trial] = np.delete(events[neuron][trial],
                                                to_delete_low)
 
             to_delete_high = np.where(
-                stim_on[neuron][trial]
-                > len(ephysobj.analog_signals[0][0]) - 251)
-            stim_on[neuron][trial] = np.delete(stim_on[neuron][trial],
+                events[neuron][trial]
+                > len(ephysobj.sig[0][0]) - 251)
+            events[neuron][trial] = np.delete(events[neuron][trial],
                                                to_delete_high)
 
-    print('\nAdded stim_on (spontaneous events):')
+    print('Event counts:')
 
     for neuron in range(num_neurons):
-        num_trials = ephysobj.analog_signals[neuron].shape[0]
+        num_trials = ephysobj.sig[neuron].shape[0]
         print('\tNeuron ', neuron, ': ')
 
         for trial in range(num_trials):
-            print('\t\tTrial ', int(trial), ': ', len(stim_on[neuron][trial]),
+            print('\t\tTrial ', int(trial), ': ', len(events[neuron][trial]),
                   ' event(s)')
 
-    return stim_on
+    return events
 
 
 def export(files, channels=None, export_format='matlab', names=None):

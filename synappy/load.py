@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 
 
-def load(files, trials=None, input_channel=None, stim_channel=None,
+def load(fnames, trials=None, input_channel=None, stim_channel=None,
          verbose=True):
     """
     Loads a dataset of .abf files into an EphysObject class instance.
@@ -15,7 +15,7 @@ def load(files, trials=None, input_channel=None, stim_channel=None,
 
     Parameters
     ---------------
-    files : list
+    fnames : list
         A list of strings corresponding to .abf filenames to load
 
     trials : list or None
@@ -45,21 +45,23 @@ def load(files, trials=None, input_channel=None, stim_channel=None,
         An instance of the EphysObject class, containing input and stimulus
         signals, recording information, and any quantified event statistics.
 
-        - syn_obj.analog_signals[neuron][trial, time_index]
-        - syn_obj.analog_units[neuron]
-        - syn_obj.stim_signals[neuron][trial]
+        - syn_obj.sig[neuron][trial, time_index]
+        - syn_obj.sig_units[neuron]
+        - syn_obj.sig_stim[neuron][trial]
     """
 
-    if verbose is True:
-        print('\n\n----New Group---')
-
     syn_obj = EphysObject()
+    syn_obj.fnames = fnames
 
-    n_neurs = len(files)
+    n_neurs = len(fnames)
 
-    syn_obj.analog_signals = np.empty(n_neurs, dtype=np.ndarray)
-    syn_obj.stim_signals = np.empty(n_neurs, dtype=np.ndarray)
-    syn_obj.times = np.empty(n_neurs, dtype=np.ndarray)
+    if verbose is True:
+        print(f'Loading {n_neurs} recordings...')
+
+    syn_obj.sig = np.empty(n_neurs, dtype=np.ndarray)
+    syn_obj.sig_stim = np.empty(n_neurs, dtype=np.ndarray)
+    syn_obj.t = np.empty(n_neurs, dtype=np.ndarray)
+    syn_obj._sampling_rate = np.empty(n_neurs)
 
     # Check for presence of optional variables, create them if they don't exist
     if input_channel is None:
@@ -72,9 +74,9 @@ def load(files, trials=None, input_channel=None, stim_channel=None,
     elif type(stim_channel) is int:
         stim_channel = (np.ones(n_neurs) * stim_channel).astype(np.int8)
 
-    # Populate analog_signals and times from raw data in block
+    # Populate sig and times from raw data in block
     for neuron in range(n_neurs):
-        reader = neo.rawio.AxonRawIO(filename=files[neuron])
+        reader = neo.rawio.AxonRawIO(filename=fnames[neuron])
         reader.parse_header()
         n_trials_in_rec = reader.header['nb_segment'][0]
         _in_ch = input_channel[neuron]
@@ -85,9 +87,10 @@ def load(files, trials=None, input_channel=None, stim_channel=None,
             block_index=0,
             seg_index=0,
             channel_indexes=[_in_ch]).shape[0]
-        _t_interv = 1 / reader.get_signal_sampling_rate()
+        syn_obj._sampling_rate[neuron] = reader.get_signal_sampling_rate()
+        _t_interv = 1 / syn_obj._sampling_rate
         _t_stop = _t_interv * n_samples
-        syn_obj.times[neuron] = np.arange(0, _t_stop, _t_interv)
+        syn_obj.t[neuron] = np.arange(0, _t_stop, _t_interv)
 
         # setup trials if not initialized
         if trials is not None:
@@ -105,10 +108,10 @@ def load(files, trials=None, input_channel=None, stim_channel=None,
             _raw_sig_stim,
             dtype='float64',
             channel_indexes=[_stim_ch])[:, 0]
-        syn_obj.stim_signals[neuron] = _float_sig_stim
+        syn_obj.sig_stim[neuron] = _float_sig_stim
 
         # store analog signal
-        syn_obj.analog_signals[neuron] = np.empty((n_trials, n_samples))
+        syn_obj.sig[neuron] = np.empty((n_trials, n_samples))
         for trial in _trials:
             _raw_sig = reader.get_analogsignal_chunk(
                 block_index=0,
@@ -118,12 +121,19 @@ def load(files, trials=None, input_channel=None, stim_channel=None,
                 _raw_sig,
                 dtype='float64',
                 channel_indexes=[_in_ch])[:, 0]
-            syn_obj.analog_signals[neuron][trial, :] = _float_sig
-            syn_obj.analog_units = reader.header['signal_channels'][
+            syn_obj.sig[neuron][trial, :] = _float_sig
+            syn_obj.sig_units = reader.header['signal_channels'][
                 _in_ch]['units']
 
+        # print summary of this neuron
+        if verbose is True:
+            print(f'\tfile {fnames[neuron]}:')
+            print(f'\t\ttrials: {n_trials}')
+            print(f'\t\tunits: {syn_obj.sig_units}')
+            print(f'\t\tdur: {_t_stop[0]}s')
+
     if verbose is True:
-        print('\nInitialized. \nAdded analog_signals. \nAdded times.')
+        print('Added .sig \nAdded .sig_stim \nAdded .t')
 
     return syn_obj
 
@@ -134,7 +144,7 @@ def load_all_channels(fname):
     """
     rec = SimpleNamespace()
 
-    # Populate analog_signals and times from raw data in block
+    # Populate sig and times from raw data in block
     reader = neo.rawio.AxonRawIO(filename=fname)
     reader.parse_header()
     n_trials = reader.header['nb_segment'][0]
