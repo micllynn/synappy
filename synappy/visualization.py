@@ -29,7 +29,7 @@ def preview(fname):
 
     """
 
-    p = PreviewFile()
+    p = PreviewFile(fname)
     p.plot()
 
     return p

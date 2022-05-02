@@ -89,6 +89,7 @@ class EphysObject(object):
         self.events : np.ndarray
             An array of stimulus/spontaneous event onset indices
             for each neuron.
+            Indices correspond to the .sig or .t attributes.
             - if event_type='stim':
                 .events[neuron][trial][stim]
             - if event_type='spont':
@@ -106,7 +107,7 @@ class EphysObject(object):
         return
 
     def add_ampli(self, event_sign='pos',
-                  t_baseline_lower=4, t_baseline_upper=0.2,
+                  t_baseline_lower=20, t_baseline_upper=0.2,
                   t_event_lower=5, t_event_upper=30,
                   t_savgol_filt=2,
                   latency_method='max_ampli'):
@@ -171,24 +172,35 @@ class EphysObject(object):
 
         Attributes added to class instance
         ------------
-        self.ampli : np.ndarray
-            An array of amplitudes and associated metrics.
-                .ampli[neuron][trial, stim, ampli_stat], where
-                    ampli_stat=0: max amplitude (pA/mV);
-                    ampli_stat=1: index of max amplitude;
-                    ampli_stat=2: time from stim onset to max amplitude.
-        self.baseline : np.ndarray
-            An array of baselines and associated metrics.
-                .baseline[neuron][trial, stim, bl_stat], where
-                    bl_stat=0: mean of baseline before stimulus (pA/mV);
-                    bl_stat=1: st. dev. of baseline before stim (pA/mV)
-        self.latency : np.ndarray
-            An array of latencies and associated metrics. latency_method
-            specifies the way of calculating latency (eg to max ampli,
-            max deriv., first time crossing mean+4*sd, etc.)
-                .latency[neuron][trial, stim, lat_stat], where
-                    lat_stat=0: latency from stim onset (s);
-                    lat_stat=1: index of latency;
+        .ampli : SimpleNamespace
+            .ampli.data[neuron][trial, event]
+                Baseline-subtracted maximum amplitude data
+                (in pA or mV).
+            .ampli.inds[neuron][trial, event]
+                Indices in .sig of maximum amplitudes.
+            .ampli.params
+                SimpleNamespace storing key params from .add_ampli() method
+                related to amplitude.
+        .baseline : SimpleNamespace
+            .baseline.mean[neuron][trial, event]
+                Mean baseline values (in pA or mV).
+            .baseline.std[neuron][trial, event]
+                Standard deviation of baseline values (in pA or mV).
+            .baseline.inds_start[neuron][trial, event]
+                Indices of the start of baseline period in .sig
+            .baseline.inds_stop[neuron][trial, event]
+                Indices of the end of baseline period in .sig
+            .baseline.params
+                SimpleNamespace storing key params from .add_ampli() method
+                related to baseline.
+        .latency : SimpleNamespace
+            .latency.data[neuron][trial, event]
+                Event latency from stimulus onset (sec).
+            .latency.inds[neuron][trial, event]
+                Indices in .sig of event latency.
+            .latency.params
+                SimpleNamespace storing key params from .add_ampli() method
+                related to latency.
         """
         self.__check_for_events()
 
@@ -336,11 +348,9 @@ class EphysObject(object):
                         # calc
                         _sig_event_filt_grad = np.gradient(
                             _sig_event_filt[
-                                0:np.min(_sig_event_ind_maxampli, 2).astype(
+                                0:np.max([_sig_event_ind_maxampli, 2]).astype(
                                     np.int)])
-                        _max_deriv_ind = np.argmax(_sig_event_filt_grad)
-                        _ind_lat = int(_max_deriv_ind
-                                       + _ind_eventsearch_start)
+                        _ind_lat = np.argmax(np.abs(_sig_event_filt_grad))
 
                         # store
                         self.latency.inds[neuron][trial, event] \
@@ -351,10 +361,21 @@ class EphysObject(object):
 
                     elif latency_method == 'baseline_plus_4sd':
                         # calc
-                        _thresh = self.baseline.mean[neuron][trial, event] \
-                            + 4 * self.baseline.std[neuron][trial, event]
-                        _ind_lat = np.where(
-                            _sig_event_filt > _thresh)[0][0]
+                        if self.event_sign == 'pos':
+                            _thresh = self.baseline.mean[neuron][trial, event]\
+                                + 4 * self.baseline.std[neuron][trial, event]
+                        elif self.event_sign == 'neg':
+                            _thresh = self.baseline.mean[neuron][trial, event]\
+                                - 4 * self.baseline.std[neuron][trial, event]
+                        try:
+                            if self.event_sign == 'pos':
+                                _ind_lat = np.where(
+                                    _sig_event_filt > _thresh)[0][0]
+                            if self.event_sign == 'neg':
+                                _ind_lat = np.where(
+                                    _sig_event_filt < _thresh)[0][0]
+                        except IndexError:  # If no crossings are found (fail)
+                            _ind_lat = 0
 
                         # store
                         self.latency.inds[neuron][trial, event] \
@@ -365,12 +386,20 @@ class EphysObject(object):
 
                     elif latency_method == '80_20_line':
                         # calc
-                        val_80pc = 0.8 * (
-                            self.ampli.data[neuron][trial, event])\
-                            + self.baseline.mean[neuron][trial, event]
-                        val_20pc = 0.2 * (
-                            self.ampli.data[neuron][trial, event])\
-                            + self.baseline.mean[neuron][trial, event]
+                        if self.event_sign == 'pos':
+                            val_80pc = 0.8 * (
+                                self.ampli.data[neuron][trial, event])\
+                                + self.baseline.mean[neuron][trial, event]
+                            val_20pc = 0.2 * (
+                                self.ampli.data[neuron][trial, event])\
+                                + self.baseline.mean[neuron][trial, event]
+                        if self.event_sign == 'neg':
+                            val_80pc = 0.8 * (
+                                self.ampli.data[neuron][trial, event])\
+                                - self.baseline.mean[neuron][trial, event]
+                            val_20pc = 0.2 * (
+                                self.ampli.data[neuron][trial, event])\
+                                - self.baseline.mean[neuron][trial, event]
 
                         arr_80pc = val_80pc * np.ones(len(
                                 _sig_event_filt[0:_sig_event_ind_maxampli]))
@@ -406,7 +435,7 @@ class EphysObject(object):
                                           for i in range(ind_80cross)]
 
                         vals_baseline = self.baseline.mean[
-                            neuron][trial, event, 0] * np.ones(len(
+                            neuron][trial, event] * np.ones(len(
                                 _sig_event_filt[0:ind_80cross]))
                         diff_sq_8020_line = (
                             (vals_baseline - vals_8020_line)**2
@@ -420,6 +449,11 @@ class EphysObject(object):
                             = self.t[neuron][
                                 _ind_lat - _sig_event_ind_start]
 
+                    else:
+                        raise Exception('The specified latency_method ' +
+                                        'does not exist. Please ' +
+                                        'choose a valid string.')
+
         # self.height is a legacy attribute
         self.height = self.ampli
 
@@ -432,18 +466,16 @@ class EphysObject(object):
         .ampli_norm. Amplitudes are normalized to the mean ampli for each
         stimulus delivered to each neuron.
 
-        Parameters
-        ------------
-
+        .ampli must be an existing attribute, through the .add_ampli() method.
 
         Attributes added to class instance
         ------------
-        self.ampli_norm : np.ndarray
-            An array of amplitudes and associated metrics.
-                .ampli_norm[neuron][trial, stim, ampli_stat], where
-                    ampli_stat=0: max amplitude (norm.);
-                    ampli_stat=1: index of max amplitude;
-                    ampli_stat=2: time from stim onset to max amplitude.
+        self.ampli : SimpleNamespace
+            .ampli_norm.data[neuron][trial, event]
+                Baseline-subtracted normalized max amplitude data
+                (in pA or mV).
+            .ampli_norm.inds[neuron][trial, event]
+                Indices in .sig of normalized max amplitudes.
         """
         self.__check_for_events()
         self.__check_for_ampli()
@@ -470,11 +502,11 @@ class EphysObject(object):
         failures are stored as masked elements in the following attributes:
         .ampli, .latency, .baseline. A copy of the mask is stored in .mask.
 
-        Failures are determined in one of two ways. First, the method can use
-        a dynamic threshold, mean + 3*S.D. (thresh = false).
-        Alternately, the method allows a user-specified threshold which can be
-        constant for all neurons (type(thresh) = float) or can be specified for
-        each neuron (len(thresh) = num_neurons).
+        Failures are determined in one of two ways.
+            1. If thresh=False, the method uses a dynamic threshold
+            (baseline mean + 3*S.D.) for failures/successes.
+            2. If thresh is defined, it specifies the baseline-subtracted
+            amplitude threshold for failures/successes.
 
         Parameters
         ---------------
@@ -495,22 +527,19 @@ class EphysObject(object):
 
         Attributes added to class instance
         ------------
-        .ampli, .latency, .baseline are modified to be np.masked.arrays, with
-        the masked elements corresponding to failures. In addition, the
-        following attributes are added:
+        The .data and .inds attributes of .ampli, .latency, .baseline are
+        np.ma.arrays, with the masked elements corresponding to failures.
+        Also, the following attributes are added:
 
-        self.mask : np.ndarray
-            A boolean masking array in which trials/stims are failures (True,
-            masked) or successes (False, unmasked).
-                .mask[neuron][trial, stim]
-        self.fail_rate : np.ndarray
+        .mask[neuron][trial, event]
+            A boolean mask structrue in which True values denote failures
+            and False values denote successes.
+        .fail_rate[neuron][stim]
             An array of the fractional failure rate of each stimulus
             presentation in each neuron.
-                .fail_rate[neuron][stim]
             - For example, if stimulus 3 delivered to neuron 1 evoked
             suprathreshold responses in 15/20 trials (where thresh defines
             threshold), self.fail_rate[1][3] = 0.75.
-
         """
         self.__check_for_events()
         self.__check_for_ampli()
@@ -572,11 +601,11 @@ class EphysObject(object):
 
         Parameters
         ------------
-        prestim : float
+        t_prestim : float
             Time before stimulus, in ms, to include in signal
             used to compute decay.
 
-        poststim : float
+        t_poststim : float
             Time after stimulus, in ms, to include in signal
             used to compute decay.
 
@@ -594,21 +623,17 @@ class EphysObject(object):
 
         Attributes added
         ------------
-        self.decay : SimpleNamespace
-            A namespace of fitted decay parameters.
-
-            .decay.vars[neuron][trial, stim, decay_param]
+        .decay : SimpleNamespace
+            .decay.vars[neuron][trial, stim, decay_var]
                 Fitted variables for monoexponential decay.
-
                 - If fn='monoexp', then
-                    decay_param=0 : lambda1
-                    decay_param=1 : b
-
+                    decay_var=0 : lambda1
+                    decay_var=1 : b
                 - If fn='biexp_normalized_plusb', then
-                    decay_param=0 : lambda1
-                    decay_param=1 : lambda2
-                    decay_param=2 : vstart2
-                    decay_param=3 : b
+                    decay_var=0 : lambda1
+                    decay_var=1 : lambda2
+                    decay_var=2 : vstart2
+                    decay_var=3 : b
 
             .decay.covari[neuron][trial, stim, decay_param]
                 Covariance matrices for fitted variables,
@@ -620,7 +645,6 @@ class EphysObject(object):
         self.__check_for_events()
         self.__check_for_ampli()
 
-        # Import variables from synappy wrapper
         n_neurons = len(self.ampli.data)
 
         self.decay = SimpleNamespace(vars=np.empty(n_neurons,
@@ -629,6 +653,8 @@ class EphysObject(object):
                                                      dtype=np.ndarray),
                                      params=SimpleNamespace())
         self.decay.params.fn = fn
+        self.decay.params.t_prestim = t_prestim
+        self.decay.params.t_poststim = t_poststim
 
         def biexp(time_x, lambda1, lambda2, vstart2, b):
             y = np.exp(time_x * (-1) * lambda1) \
@@ -808,7 +834,7 @@ class EphysObject(object):
 
         return
 
-    def add_integral(self, t_integral=1000, cdf_bins=100):
+    def add_integral(self, t_integral=200, cdf_bins=100):
         """
         Compute the integral for each post-synaptic event.
 
@@ -820,17 +846,21 @@ class EphysObject(object):
         cdf_bins : int
             Number of bins for the cumulative integral
 
-
         Attributes added
         ------------
-        self.integral : np.ndarray
-            An array of integral values (mV*sec or pA*sec).
-                .integral[neuron][trial, stim]
-        self.integral_cdf : np.ndarray
-            An array containing the cumulative distribution of the integral,
-            with bins=cdf_bins, over the entire t_integral time. (units are
-            fractional integral from 0->1.)
-                .integral_cdf[neuron][trial, stim][cdf_bin]
+        .integral : SimpleNamespace
+            .integral.data[neuron][trial, event]
+                Integral values for each event (in pA*sec or mV*sec).
+            .integral.inds_start[neuron][trial, event]
+                Indices of the start of integral period in .sig
+            .integral.inds_stop[neuron][trial, event]
+                Indices of the end of integral period in .sig
+            .integral.cdf[neuron][trial, event]
+                Cumulative distribution of the integral over time
+                for each event.
+            .integral.params
+                SimpleNamespace storing key params from .add_integral() method
+                related to integral.
         """
         self.__check_for_events()
         self.__check_for_ampli()
@@ -839,6 +869,8 @@ class EphysObject(object):
 
         self.integral = SimpleNamespace(
             data=np.empty(n_neurons, dtype=np.ndarray),
+            inds_start=np.empty(n_neurons, dtype=np.ndarray),
+            inds_stop=np.empty(n_neurons, dtype=np.ndarray),
             cdf=np.empty(n_neurons, dtype=np.ndarray),
             params=SimpleNamespace(t_integral=t_integral,
                                    cdf_bins=cdf_bins))
@@ -849,18 +881,25 @@ class EphysObject(object):
             self.integral.data[neuron] = np.zeros([n_trials, n_stims])
             self.integral.cdf[neuron] = np.zeros(
                 [n_trials, n_stims, int(cdf_bins)])
+            self.integral.inds_start[neuron] = np.zeros(
+                [n_trials, n_stims], dtype=int)
+            self.integral.inds_stop[neuron] = np.zeros(
+                [n_trials, n_stims], dtype=int)
 
             for trial in range(n_trials):
                 for stim in range(n_stims):
                     # calc integral
                     ind_start = int(self.events[neuron][stim])
-                    ind_end = self._from_t_to_ind(t_integral, neuron) \
+                    ind_stop = self._from_t_to_ind(t_integral, neuron) \
                         + ind_start
 
+                    self.integral.inds_start[neuron][trial, stim] = ind_start
+                    self.integral.inds_stop[neuron][trial, stim] = ind_stop
+
                     _sig_event = (
-                        self.sig[neuron][trial, ind_start:ind_end]
+                        self.sig[neuron][trial, ind_start:ind_stop]
                         - self.baseline.mean[neuron][trial, stim])
-                    _t_event = self.t[neuron][ind_start:ind_end]
+                    _t_event = self.t[neuron][ind_start:ind_stop]
 
                     self.integral.data[neuron][trial, stim] \
                         = sp_integrate.trapz(_sig_event, _t_event)
@@ -869,17 +908,21 @@ class EphysObject(object):
                     for nbin in range(cdf_bins):
                         _curr_cdf_frac = (nbin+1) / cdf_bins
 
-                        ind_end = int((self._from_t_to_ind(t_integral, neuron)
+                        ind_stop = int((self._from_t_to_ind(t_integral, neuron)
                                        + ind_start) * _curr_cdf_frac)
 
                         _sig_event = (self.sig[neuron][
-                            trial, ind_start:ind_end]
+                            trial, ind_start:ind_stop]
                                     - self.baseline.mean[neuron][trial, stim])
-                        _t_event = self.t[neuron][ind_start:ind_end]
+                        _t_event = self.t[neuron][ind_start:ind_stop]
 
                         self.integral.cdf[neuron][trial, stim, nbin] = (
                             sp_integrate.trapz(_sig_event, _t_event)
                             / self.integral.data[neuron][trial, stim])
+
+        self._all_stats.append(self.integral.data)
+        self._all_stats.append(self.integral.inds_start)
+        self._all_stats.append(self.integral.inds_stop)
 
         print('Added .integral')
 
@@ -956,7 +999,7 @@ class EphysObject(object):
 
         return
 
-    def preview(self, neur, attr=None):
+    def preview(self, neur, attrs=None, **kwargs):
         """Plots the analog signals from a given neuron, and a list of attributes.
 
         Parameters
@@ -964,15 +1007,15 @@ class EphysObject(object):
         neur : ind
             The index of the neuron to preview.
 
-        attr : None or str
-            If not None, the name of an attribute within the EphysObj class
-            instance to preview. Can be:
+        attr : None or list
+            If not None, a list of attribute strings within the EphysObj class
+            instance to preview. These strings can be:
                 'ampli'
                 'latency'
                 'baseline'
         """
 
-        p = PreviewEphysObject(self, neur, attr)
+        p = PreviewEphysObject(self, neur, attrs, **kwargs)
         p.plot()
 
         return
@@ -1193,11 +1236,6 @@ class EphysObject(object):
             to_replace = np.argwhere(
                 self.ampli_norm.data[neuron][:, :, 0] > thresh)
 
-            self.ampli_norm.data[neuron][to_replace[:, 0],
-                                         to_replace[:, 1], :] = np.nan
-            self.ampli_norm.data[neuron].mask[to_replace[:, 0],
-                                              to_replace[:, 1], :] = True
-
             self.ampli.data[neuron][to_replace[:, 0],
                                     to_replace[:, 1], :] = np.nan
             self.ampli.data[neuron].mask[to_replace[:, 0],
@@ -1207,6 +1245,14 @@ class EphysObject(object):
                                       to_replace[:, 1], :] = np.nan
             self.latency.data[neuron].mask[to_replace[:, 0],
                                            to_replace[:, 1], :] = True
+
+            try:
+                self.ampli_norm.data[neuron][to_replace[:, 0],
+                                             to_replace[:, 1], :] = np.nan
+                self.ampli_norm.data[neuron].mask[to_replace[:, 0],
+                                                  to_replace[:, 1], :] = True
+            except:
+                pass
 
             self.mask[neuron] = self.ampli.data[neuron].mask
 
@@ -1344,10 +1390,14 @@ class PreviewEphysObject(object):
                  figsize=(10, 7),
                  _color_reg=[0.65, 0.65, 0.65],
                  _color_bold=[0.0118, 0.443, 0.612],
-                 _color_mean=[0.980, 0.259, 0.141]):
+                 _color_mean=[0.980, 0.259, 0.141],
+                 _color_ampli_bl=[0.98, 0.26, 0.14],
+                 _color_lat=[0.99, 0.78, 0.08],
+                 _color_integ=[0.145, 0.639, 0.436],
+                 _color_failure=[0.3, 0.3, 0.3]):
         """Simple class that takes an EphysObject and neuron index as input
-        and plots signals and associated attributes added
-        this recording (eg amplitude, baseline, etc.)
+        and plots signals and a given set of event attributes
+        (eg amplitude, baseline, etc.)
 
         Parameters
         ------------
@@ -1357,9 +1407,9 @@ class PreviewEphysObject(object):
         neur : ind
             Index of neuron within EphysObject to plot.
 
-        attr : None or str
+        attrs : None or list
             If None, no data attribute is plotted.
-            If str, the following are accepted for attr,
+            Otherwise, attrs should be a list of strings
             corresponding to attributes of the EphysObject instance:
                 'ampli'
                 'latency'
@@ -1372,17 +1422,29 @@ class PreviewEphysObject(object):
         self._color_bold = _color_bold
         self._color_mean = _color_mean
 
+        self._color_ampli_bl = _color_ampli_bl
+        self._color_lat = _color_lat
+        self._color_integ = _color_integ
+        self._color_failure = _color_failure
+
         self.neur = neur
         self.figsize = figsize
         self.ephysobj = ephysobj
+        self._dtype = type(self.ephysobj.ampli.data[self.neur])
 
         self.attrs = attrs
         self.n_attrs = len(attrs)
         self.attr_data = np.empty(self.n_attrs, dtype=np.ndarray)
         self.attr_inds = np.empty(self.n_attrs, dtype=np.ndarray)
-        for ind, attr in enumerate(self.attrs):
-            if attr == 'ampli' or attr == 'latency'
-            self.attr_data[ind_attr] = getattr(self.ephysobj, self.attr)
+        self.attr_lineobjs = np.empty(self.n_attrs, dtype=np.ndarray)
+
+        self.n_stims = self.ephysobj.events[self.neur][0].shape[0]
+        for ind_attr, attr in enumerate(self.attrs):
+            self.attr_lineobjs[ind_attr] = np.empty(self.n_attrs,
+                                                    dtype=np.ndarray)
+            for stim in range(self.n_stims):
+                self.attr_lineobjs[ind_attr] = np.empty(
+                    self.n_stims, dtype=np.ndarray)
 
         plt.ion()
         mpl.style.use('fast')
@@ -1407,7 +1469,7 @@ class PreviewEphysObject(object):
         self.ax.append(self.fig.add_subplot(spec[1, :],
                                             sharex=self.ax[0]))
 
-        # plot analog signals
+        # setup lines and temporary variables
         self.lines = np.empty(2, dtype=np.ndarray)
         self.lines_mean = np.empty(2, dtype=np.ndarray)
         self.mean = np.empty(2, dtype=np.ndarray)
@@ -1468,7 +1530,7 @@ class PreviewEphysObject(object):
         self.buttons.mean.on_clicked(self.on_mean)
 
         self.bold_trial(self._curr_trial)
-        self.add_attr_for_trial(self._curr_trial)
+        self.add_attrs_for_trial()
 
         # add text
         self.text = self.fig.text(0.05, 0.03,
@@ -1495,8 +1557,12 @@ class PreviewEphysObject(object):
 
     def on_next(self, event):
         self.unbold_trial(self._curr_trial)
+        self.remove_attrs_for_trial()
+
         self.update_curr_trial_next()
+
         self.bold_trial(self._curr_trial)
+        self.add_attrs_for_trial()
 
         self.update_trialtext()
 
@@ -1505,8 +1571,12 @@ class PreviewEphysObject(object):
 
     def on_prev(self, event):
         self.unbold_trial(self._curr_trial)
+        self.remove_attrs_for_trial()
+
         self.update_curr_trial_prev()
+
         self.bold_trial(self._curr_trial)
+        self.add_attrs_for_trial()
 
         self.update_trialtext()
 
@@ -1549,14 +1619,171 @@ class PreviewEphysObject(object):
         # main signal
         self.lines[0][trial][0].remove()
         self.lines[0][trial] = self.ax[0].plot(
-            self.ephysobj.t[0],
+            self.ephysobj.t[self.neur],
             self.ephysobj.sig[self.neur][trial, :],
             color=self._color_reg,
             linewidth=0.5)
 
-    def add_attr_for_trial(self, trial):
-        
+    def add_attrs_for_trial(self):
+        for ind, attr in enumerate(self.attrs):
+            if attr == 'ampli':
+                self._plot_ampli(ind)
+            elif attr == 'baseline':
+                self._plot_baseline(ind)
+            elif attr == 'latency':
+                self._plot_latency(ind)
+            elif attr == 'decay':
+                self._plot_decay(ind)
+            elif attr == 'integral':
+                self._plot_integral(ind)
+
+    def remove_attrs_for_trial(self):
+        for ind, attr in enumerate(self.attrs):
+            self._unplot(ind)
 
     def update_trialtext(self):
         self.text.set_text(f'neur: {self.neur} | ' +
                            f'trial: {self._curr_trial}')
+
+    def _plot_ampli(self, ind_attr):
+        for stim in range(self.n_stims):
+            _curr_element = self.ephysobj.ampli.data[self.neur][
+                self._curr_trial, stim]
+
+            if self._dtype == np.ndarray:
+                _ind_ampli = self.ephysobj.ampli.inds[self.neur][
+                    self._curr_trial, stim]
+                _color = self._color_ampli_bl
+            elif self._dtype == np.ma.MaskedArray:
+                _ind_ampli = self.ephysobj.ampli.inds[self.neur].data[
+                    self._curr_trial, stim]
+                if np.ma.is_masked(_curr_element) is True:
+                    _color = self._color_failure
+                elif np.ma.is_masked(_curr_element) is False:
+                    _color = self._color_ampli_bl
+
+            _t_ampli = self.ephysobj.t[self.neur][
+                _ind_ampli]
+            _sig_ampli = self.ephysobj.sig[self.neur][
+                self._curr_trial, _ind_ampli]
+
+            self.attr_lineobjs[ind_attr][stim] = self.ax[0].plot(
+                _t_ampli, _sig_ampli,
+                '.', color=_color, markersize=10,
+                zorder=150)
+
+    def _plot_baseline(self, ind_attr):
+        for stim in range(self.n_stims):
+            _curr_element = self.ephysobj.baseline.mean[self.neur][
+                self._curr_trial, stim]
+
+            if self._dtype == np.ndarray:
+                _color = self._color_ampli_bl
+                _ind_bl_start = self.ephysobj.baseline.inds_start[self.neur][
+                    self._curr_trial, stim]
+                _ind_bl_stop = self.ephysobj.baseline.inds_stop[self.neur][
+                    self._curr_trial, stim]
+                _mean_bl = self.ephysobj.baseline.mean[self.neur][
+                    self._curr_trial, stim]
+
+            elif self._dtype == np.ma.MaskedArray:
+                _ind_bl_start = self.ephysobj.baseline.inds_start[
+                    self.neur].data[self._curr_trial, stim]
+                _ind_bl_stop = self.ephysobj.baseline.inds_stop[
+                    self.neur].data[self._curr_trial, stim]
+                _mean_bl = self.ephysobj.baseline.mean[self.neur].data[
+                    self._curr_trial, stim]
+
+                if np.ma.is_masked(_curr_element) is True:
+                    _color = self._color_failure
+                elif np.ma.is_masked(_curr_element) is False:
+                    _color = self._color_ampli_bl
+
+            _t_start = self.ephysobj.t[self.neur][
+                _ind_bl_start]
+            _t_stop = self.ephysobj.t[self.neur][
+                _ind_bl_stop]
+
+
+            self.attr_lineobjs[ind_attr][stim] = self.ax[0].plot(
+                [_t_start, _t_stop], [_mean_bl, _mean_bl],
+                color=_color, linewidth=2,
+                zorder=150)
+
+    def _plot_latency(self, ind_attr):
+        for stim in range(self.n_stims):
+            _curr_element = self.ephysobj.latency.data[self.neur][
+                self._curr_trial, stim]
+
+            if self._dtype == np.ndarray:
+                _ind_lat = self.ephysobj.latency.inds[self.neur][
+                    self._curr_trial, stim]
+                _color = self._color_lat
+
+            elif self._dtype == np.ma.MaskedArray:
+                _ind_lat = self.ephysobj.latency.inds[self.neur].data[
+                    self._curr_trial, stim]
+                if np.ma.is_masked(_curr_element) is True:
+                    _color = self._color_failure
+                elif np.ma.is_masked(_curr_element) is False:
+                    _color = self._color_lat
+
+            _t_ampli = self.ephysobj.t[self.neur][
+                _ind_lat]
+            _sig_ampli = self.ephysobj.sig[self.neur][
+                self._curr_trial, _ind_lat]
+
+            self.attr_lineobjs[ind_attr][stim] = self.ax[0].plot(
+                _t_ampli, _sig_ampli,
+                '.', color=_color, markersize=6,
+                zorder=150)
+
+    def _plot_integral(self, ind_attr):
+        for stim in range(self.n_stims):
+            _curr_element = self.ephysobj.integral.data[self.neur][
+                self._curr_trial, stim]
+
+            if self._dtype == np.ndarray:
+                _ind_integ_start = self.ephysobj.integral.inds_start[
+                    self.neur][self._curr_trial, stim]
+                _ind_integ_stop = self.ephysobj.integral.inds_stop[
+                    self.neur][self._curr_trial, stim]
+                _mean_bl = self.ephysobj.baseline.mean[self.neur][
+                    self._curr_trial, stim]
+                _color = self._color_integ
+
+            elif self._dtype == np.ma.MaskedArray:
+                _ind_integ_start = self.ephysobj.integral.inds_start[
+                    self.neur].data[self._curr_trial, stim]
+                _ind_integ_stop = self.ephysobj.integral.inds_stop[
+                    self.neur].data[self._curr_trial, stim]
+                _mean_bl = self.ephysobj.baseline.mean[self.neur].data[
+                    self._curr_trial, stim]
+
+                if np.ma.is_masked(_curr_element) is True:
+                    _color = self._color_failure
+                elif np.ma.is_masked(_curr_element) is False:
+                    _color = self._color_integ
+
+            _t_vec = self.ephysobj.t[self.neur][
+                _ind_integ_start:_ind_integ_stop]
+
+            _inds_in_bl_line = _ind_integ_stop - _ind_integ_start
+            _mean_bl_line = np.ones(_inds_in_bl_line) * _mean_bl
+
+            _sig_line = self.ephysobj.sig[self.neur][
+                self._curr_trial, _ind_integ_start:_ind_integ_stop]
+
+            self.attr_lineobjs[ind_attr][stim] = self.ax[0].fill_between(
+                _t_vec, _mean_bl_line, _sig_line,
+                alpha=0.5, color=_color, interpolate=True,
+                zorder=100)
+
+    def _unplot(self, ind_attr):
+        for stim in range(self.n_stims):
+            _line_obj = self.attr_lineobjs[ind_attr][stim]
+            if 'matplotlib' in str(type(_line_obj)):
+                _line_obj.remove()
+            elif type(_line_obj) == list:
+                _line_obj[0].remove()
+        return

@@ -1,43 +1,41 @@
 Table of Contents
 =================
 
-   * [Introduction](#introduction)
-   * [Installation](#installation)
-   * [Getting started](#getting-started)
-      * [The basics](#the-basics)
-      * [Built-in event types](#built-in-event-types)
-         * [Rewards](#rewards)
-         * [GPIO stimuli](#gpio-stimuli)
-         * [Audio](#audio)
-         * [Looming visual stimulus](#looming-visual-stimulus)
-      * [Built-in measurement types](#built-in-measurement-types)
-         * [Continuous polling from GPIO:](#continuous-polling-from-gpio)
-         * [Notes on acquiring measurements](#notes-on-acquiring-measurements)
-      * [Video streaming](#video-streaming)
-   * [Advanced usage](#advanced-usage)
-      * [Defining stochastic event start times](#defining-stochastic-event-start-times)
-      * [Defining stochastic ITIs](#defining-stochastic-itis)
-      * [Constructing more complex experiments](#constructing-more-complex-experiments)
-   * [Stored data format: HDF5](#stored-data-format-hdf5)
-      * [Experiment attributes](#experiment-attributes)
-      * [Trial attributes](#trial-attributes)
-      * [Measurements](#measurements)
-      * [Events](#events)
-   * [Creating custom classes](#creating-custom-classes)
-      * [Events](#events-1)
-      * [Measurements](#measurements-1)
+* [Introduction](#introduction)
+* [Installation](#installation)
+* [Getting started](#getting-started)
+  * [Previewing data](#previewing-data)
+  * [Detecting and quantifying events](#detecting-and-quantifying-events)
+  * [Visualizing event statistics](#visualizing-event-statistics)
+  * [Retrieving values](#retrieving-values)
+* [Event quantification](#event-quantification)
+  * [`add_ampli()`](#-add-ampli---)
+  * [`add_ampli_norm()`](#-add-ampli-norm---)
+  * [`add_decay()`](#-add-decay---)
+  * [`add_integral()`](#-add-integral---)
 
 # Introduction
 
-SynapPy is a data analysis tool for patch-clamp synaptic physiologists who work with .abf files and want to rapidly quantify post-synaptic event statistics and visualize the results.
+SynapPy is a Pythonic data visualization and analysis tool for patch-clamp
+synaptic physiologists who work with synaptic events stored in Axon Binary
+Format files (.abf).
 
-Synappy detects electrically or optically evoked post-synaptic events in either current clamp or voltage clamp, as long as there is an input channel associated with these stimuli. In addition to detecting events, Synappy includes a Pythonic set of methods to quantify post-synaptic event statistics, including amplitude, baseline, decay kinetics, rise-time, and release probability. Finally, Synappy includes basic support for detecting spontaneous (non-stimulus-triggered) events and quantifying their statistics.
-
-SynapPy additionally includes intelligent tools for data visualization and quality control.
+First, SynapPy provides preview and visualization capabilities for .abf
+files, including sweep highlighting and averaging. Second, SynapPy
+provides a set of Pythonic tools for automated detection and
+quantification of post-synaptic events (either electrically or
+optically evoked) based on a stimulus trigger channel. SynapPy can
+auto-magically quantify amplitude, baseline, integral, decay kinetics
+and rise-time, latency, and release probability. Moreover, these event
+attributes can be easily overlaid with the raw signal for visual
+inspection afterwards. Finally, Synappy includes basic support for
+detecting spontaneous (non-stimulus-triggered) events and, of course,
+quantifying their statistics.
 
 # Installation
 
-The main dependencies are: python3, numpy, scipy, matplotlib and neo (ver 0.4+ recommended). Neo is used to parse raw data from the .abf files.
+The main dependencies are: python3, numpy, scipy, matplotlib and neo
+(ver 0.4+ recommended). Neo is used to parse raw data from the .abf files.
 
 A basic installation using the included setup.py file:
 ```python
@@ -46,154 +44,283 @@ cd synappy
 python3 setup.py install
 ```
 
+(Make sure you substitute your binary of python here!)
+
 # Getting started
 
-## The basics
-We will start by importing the package and loading the data.
-
+## Previewing data
+Let's start by previewing a file:
 ```python
 import synappy
 
-files = ['test_file.abf', 'test_file2.abf']
+p = syn.preview('ex_file.abf')
+```
+This plots all channels and sweeps from the file. Sweeps can be
+advanced by the indicated buttons, and an average across all sweeps
+can be taken.
+![preview-ex](/imgs/preview_ex.png)
 
-syn.load(files, )
+## Detecting and quantifying events
+To work with synaptic events, we first need to import the associated
+files.
+```python
+import synappy
+
+files = ['ex_file_1.abf', 'ex_file_2.abf']
+d = syn.load(files, input_channel=0, stimulus_channel=2)
+```
+Note that `files` can be thought of as a dataset (for example, a
+related group of files with the same parameters for stimulation or
+drug infusion.) Also note that if needed, we can specify the signal
+channel number and stimulus trigger channel number.
+(If no arguments are provided, these default to first and last
+channels, respectively.)
+
+`syn.load()` stores the signal, time and stimulus information in the
+following class attributes:
+* `d.sig[neuron][trial, t_ind]`
+  * The raw signal for a given neuron, trial and time index.
+* `d.sig_stim[neuron][trial, t_ind]`
+  * The stimulus trigger signal for a given neuron, trial and time index.
+* `d.t[neuron]`
+  * Time, in seconds, for a given neuron
+
+Next, we add stimulus-triggered events.
+```python
+d.add_events()
+```
+This searches the stimulus channel provided for any pulses, and adds
+these locations as event onsets.
+
+Most event statistics can then be added using specific class methods,
+described in detail below. Here, we first add the simplest event
+statistic, amplitude:
+```python
+d.add_ampli(event_sign='pos')
+```
+This quantifies amplitude from baseline, in the direction specified
+by event_sign ('pos' or 'neg' to deal with excitatory or inhibitory
+events), after the stimulus trigger.
+
+A convenient library of general event statistics, including event decay
+and integral, can be added with the following command:
+```python
+d.add_all(event_sign='pos')
 ```
 
-SynapPy first loads the files into an instance of a specialized class containing the specified signal channels and the times as attributes:
-    .analog_signals
-        [neuron][trial, time_indices]
-    .stim_signals
-        [neuron][trial, time_indices]
-    .times
-        [neuron][times]
-
-### Adding stimulus onsets
-Through the .add_stim_on() method, one can then add either evoked (event_type = 'stim') or spontaneous (event_type = 'spontaneous') events into the .stim_on attribute:
-    .stim_on
-        [neuron][trial][stim_indices]
-
-
-### Adding post-synaptic event statistics
-For each event, one can then add a variety of post-synaptic event statistics. These are added through the .add_all() method, or through individual methods for more granuarity (e.g. .add_ampli(), .add_latency(); a.dd_decays()). The postsynaptic event statistics are automatically stored in attributes which can be accessed at a later time:
-
-    #---------------
-    .height[neuron][trial, stim, [height_params]]
-    #---------------
-    #Stores baseline-subtracted peak amplitude of PSP
-    #[height_params] = [ampli, ampli_ind,
-        time_of_max_ampli_from_stim, first_deriv]]
-
-    #---------------
-    .baseline[neuron][trial, stim, [baseline_params]]
-    #---------------
-    #Stores values for baseline signal
-    #[baseline_params] = [mean_baseline, stdev_baseline]
-
-    #---------------
-    .latency[neuron][trial, stim, [latency_params]]
-    #---------------
-    #Stores latency from stimulus onset to foot of PSP
-    #[latency_params] = [latency_sec, ind_latency_sec]
-
-    #---------------
-    .height_norm[neuron][trial, stim, [height_params]]
-    #---------------
-    #Stores baseline-subtracted peak ampli normalized to 1 within a cell
-    #[height_params] = [normalized_ampli, norm_ampli_ind,
-            time_of_max_ampli_from_stim, first_deriv]]
-
-    #---------------
-    .decay[neuron][trial, stim, [tau_params]]
-    #---------------
-    #Stores statistics for the decay tau of PSP
-    #[tau_params] = [tau, baseline_offset]
-
-
-### Data quality and further analysis
-By default, SynapPy intelligently filters out data if events are not above 4*SD(baseline), or if their decay constant (tau) is nonsensical. These events are masked but kept in the underlying data structure, providing a powerful tool to both analyze release probability/failure rate, or alternatively spike probability.
+## Visualizing event statistics
+Most event statistics can be overlaid with the recorded signal in a
+single plot for convenient quality control.
+```python
+d.preview(neur=0, attrs=['ampli', 'baseline'])
+```
+Here, we've specified a neuron to preview, as well as a list of attributes
+(event statistics) to annotate, typically as colored dots overlaid with the
+trace. Note that these can be any attributes shown in the verbose printing
+from class methods.
 
 
 
-## An analysis pipeline including commands and their usage
+## Retrieving values
+All event statistics (eg amplitude, etc.) are stored in a logical format as
+attributes within the class instance. Taking `.ampli`as an example:
 
-    ###########
-    #Load files, add event statistics, and recover these statistics for further analysis
-    ###########
-
-    import synappy as syn
-
-    event1 = syn.load(['15d20004.abf', '15d20007.abf', '15d20020.abf'])
-
-            #Give a list of filenames as first argument
-            #can also specify trial ranges [default:all], input channels [default:first]
-            #stim channels [default:last] and a downsampling ratio for analog signals [default:2]
-            #(this last property to help with rapid analysis)
-
-
-    event1.add_all(event_direction = 'down', latency_method = 'max_slope')
-
-            #automatically adds all relevant stats. Many options here to change stat properties.
-            #Note: includes filtering out of unclamped aps; and filtering out of events with nonsensical decay
+* `d.ampli.data[neuron][trial, event]`
+  * Baseline-subtracted maximum amplitude data (in pA or mV) for a given
+  neuron, trial and event index.
+* `d.ampli.inds[neuron][trial, event]`
+  * Indices in .sig of maximum amplitudes.
+* `d.ampli.params`
+  * Parameters related to the kwargs specified for the associated class
+	method. (For example, `d.ampli.params.t_event_upper` specifies the
+	max post-stimulus time to search for the maximum event amplitude.
 
 
-    event1.height_norm[neuron]
+# Event quantification
 
-            #fetch normalized height stats for that neuron. dim0 = trials, dim1 = stims.
-            #The raw data behind each attribute can be fetched this way.
+Here, we detail all the class methods available for measuring and
+quantifying synaptic events.
 
-    ##########
-    #Plot event statistics with useful built-in plotting tools
-    ##########
+All class methods are fully documented (`help(d.method)`).
 
-    event1.plot('height')
+## `.add_ampli()`
+Computes pre-event baseline values, event amplitudes,
+and event latencies (computed in a number of ways).
+	
+This requires a self.events attribute, created by calling
+the method `self.add_events()`. For each stimulus, a baseline
+signal is calculated between `t_baseline_lower` and
+`t_baseline_upper` before the stimulus onset. Next, a
+maximum event amplitude is calculated. Finally, the event
+latency (time to the peak amplitude, or alternately
+other latency metrics) is computed.
 
-            #main data visualization tool. Plots event attribute.
-            #Makes a separate figure for each neuron, then plots stim_num on x-axis and attribute on y-axis.
-            #plots are color-coded (blue are early trials, red are late trials, grey are fails)
+These values are stored as the following attributes in the
+EphysObject instance:
+	.ampli
+	.baseline
+	.latency
+
+### Parameters
+* `event_sign` : str
+	The sign of the events. Can either be 'pos',
+	reflecting EPSPs/IPSCs in IC/VC, or 'neg',
+	reflecting IPSPs/EPSCs in IC/VC.
+
+* `t_baseline_lower` : float
+	The time before stimuli, in ms, from which to
+	start computing a pre-event baseline.
+
+* `t_baseline_upper` : float
+	The time before stimuli, in ms, from which to
+	stop computing a pre-event baseline.
+
+* `t_event_lower` : float
+	The time after stimuli, in ms, from which to
+	start searching for events.
+
+* `t_event_upper` : float
+	The time after stimuli, in ms, from which to
+	stop searching for events.
+
+* `t_savgol_filt` : int
+	Width of savgol filter applied to data, in ms,
+	before computing maximum amplitude.
+
+* `latency_method` : str
+	The method used to calculate latency from stimulus to
+	event. Possible methods are:
+		- 'max_ampli': Time from stimulus to maximum amplitude.
+		- 'max_slope': Time from stimulus to maximum first deriv.
+		- 'baseline_plus_4sd': Time from stimulus to time where
+		signal exceeds baseline levels + 4 standard deviations.
+		- '80_20_line': Computes the times where the signal reaches 20%
+		and 80% of the maximum amplitude, then draws a straight line
+		between these and determines where this line first intersects
+		the signal. The time from the stimulus to this point gives
+		the latency. (Provides a best guess of when the signal starts
+		to rise.)
+
+### Attributes added to class instance
+* `.ampli` : SimpleNamespace
+	* `.ampli.data[neuron][trial, event]`
+	Baseline-subtracted maximum amplitude data
+	(in pA or mV).
+	* `.ampli.inds[neuron][trial, event]`
+	Indices in .sig of maximum amplitudes.
+	* `.ampli.params`
+	SimpleNamespace storing key params from `.add_ampli()` method
+	related to amplitude.
+* `.baseline` : SimpleNamespace
+	* `.baseline.mean[neuron][trial, event]`
+	Mean baseline values (in pA or mV).
+	* `.baseline.std[neuron][trial, event]`
+	Standard deviation of baseline values (in pA or mV).
+	* `.baseline.inds_start[neuron][trial, event]`
+	Indices of the start of baseline period in .sig
+    * `.baseline.inds_stop[neuron][trial, event]`
+	Indices of the end of baseline period in .sig
+	* `.baseline.params`
+	SimpleNamespace storing key params from `.add_ampli()` method
+	related to baseline.
+* `.latency` : SimpleNamespace
+	* `.latency.data[neuron][trial, event]`
+	Event latency from stimulus onset (sec).
+	* `.latency.inds[neuron][trial, event]`
+	Indices in .sig of event latency.
+	* `.latency.params`
+	SimpleNamespace storing key params from .add_ampli() method
+	related to latency.
 
 
-    event1.plot_corr('height, 'decay')
+## `.add_ampli_norm()`
+Adds normalized amplitude measurement to the class instance as
+.ampli_norm. Amplitudes are normalized to the mean ampli for each
+stimulus delivered to each neuron.
 
-            #plots correlation between two attributes within event1.
-            #same format/coloring as event1.plot.
+(.ampli must be an existing attribute, through the .add_ampli() method.)
 
+### Attributes added to class instance
+* `self.ampli` : SimpleNamespace
+	* `.ampli_norm.data[neuron][trial, event]`
+	Baseline-subtracted normalized max amplitude data
+	(in pA or mV).
+	* `.ampli_norm.inds[neuron][trial, event]`
+	Indices in .sig of normalized max amplitudes.
+	
+	
+## `.add_decay()`
+Fits each post-synaptic event with an exponential decay fuction
+and stores the fitted parameters in self.decay.
 
-    syn.plot_events(event1.attribute, event2.attribute)
+Decay equation variables correspond to the fitted variables for
+the equation used (see the kwarg fn for more info).
+- monoexponential decay: lambda1, b.
+- biexponential decay: lambda1, lambda2, vstart2, b.
 
-            #compare attributes from two data groups (different conditions, cell types, etc.)
+### Parameters
+* `t_prestim` : float
+	Time before stimulus, in ms, to include in signal
+	used to compute decay.
 
+* `t_poststim` : float
+	Time after stimulus, in ms, to include in signal
+	used to compute decay.
 
-    syn.plot_statwrappers(stat1, stat2, ind = 0, err_ind = 2)
+* `plotting` : bool
+	Whether to plot examples of decay fits (True) or not (False).
 
-            #compare statfiles on two events, and can also give dim1indices of statfiles to plot.
-            #eg to plot means +-sterr, syn.plot_statwrappers(stat1, stat2, ind = 0, err_ind = 2)
+* `fn` : str
+	Exponential decay function to use.
+	- 'monoexp': y = e^(-t * lambda1) + b
+	- 'biexp_normalized_plusb': y = e^(-t * lambda1)
+	 + vstart * e^(-t / lambda2) + b
 
+	(In all cases, decay tau can be computed
+	as tau= 1/lambda).
 
+### Attributes added to class instance
+* `.decay` : SimpleNamespace
+	* `.decay.vars[neuron][trial, stim, decay_var]`
+	Fitted variables for monoexponential decay.
+		- If `fn='monoexp'`, then
+		`decay_var=0` : lambda1
+        `decay_var=1` : b
+        - If `fn='biexp_normalized_plusb'`, then
+		`decay_var=0` : lambda1
+		`decay_var=1` : lambda2
+		`decay_var=2` : vstart2
+		`decay_var=3` : b
 
-## Other built-in functions and methods
+	* `.decay.covari[neuron][trial, stim, decay_param]`
+	Covariance matrices for fitted variables,
+	as documented in .decay.vars
 
-### Useful functions built into SynapPy package
-    syn.pool(event_1.attribute)
+	* `.decay.params`
+	Parameters related to the decay fitting.
+	
+	
+## `.add_integral()`
+Computes the integral for each post-synaptic event.
 
-        #Pools this attribute over [stims, :]
+### Parameters
+* `t_integral` : float
+	The total post-stimulus time to integrate, in milliseconds.
 
+* `cdf_bins` : int
+	Number of bins for the cumulative integral
 
-    syn.get_stats(event_1.attribute, byneuron = False)
-
-        #Gets statistics for this attribute over stimtrain (out[stim,:]) or neuron if byneuron is True (out[neuron,:])
-        #dim2: 1->mean, 2->std, 3->sterr, 4->success_rate_mean, 5->success_rate_stdev
-        #eg if byneuron = True, out[neuron, 3] would give sterr for that neuron, calculated by pooling across all trials/stims.
-
-
-### Useful methods which are part of the synwrapper class
-    synwrapper.propagate_mask(): propagate synwrapper.mask through to all other attributes.
-    synwrapper.add_ampli() adds .height and .latency
-    synwrapper.add_sorting() adds .mask and sorts [.height, .latency]
-    synwrapper.add_invertedsort() adds .height_fails
-    synwrapper.add_normalized() adds .height_norm
-    synwrapper.add_decay() adds .decay
-    synwrapper.remove_unclamped_aps() identifies events higher than 5x (default) amp.
-                                    It updates the .mask with this information, and then .propagate_mask()
-
-    synwrapper.add_all() is a general tool to load all stats.
-
+### Attributes added
+* `.integral` : SimpleNamespace
+	* `.integral.data[neuron][trial, event]`
+	Integral values for each event (in pA*sec or mV*sec).
+	* `.integral.inds_start[neuron][trial, event]`
+	Indices of the start of integral period in .sig
+	* `.integral.inds_stop[neuron][trial, event]`
+	Indices of the end of integral period in .sig
+	* `.integral.cdf[neuron][trial, event]`
+	Cumulative distribution of the integral over time
+	for each event.
+	* `.integral.params`
+	SimpleNamespace storing key params from .add_integral() method
+	related to integral.
