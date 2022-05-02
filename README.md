@@ -8,11 +8,11 @@ Table of Contents
   * [Detecting and quantifying events](#detecting-and-quantifying-events)
   * [Visualizing event statistics](#visualizing-event-statistics)
   * [Retrieving values](#retrieving-values)
-* [Event quantification](#event-quantification)
-  * [`add_ampli()`](#-add-ampli---)
-  * [`add_ampli_norm()`](#-add-ampli-norm---)
-  * [`add_decay()`](#-add-decay---)
-  * [`add_integral()`](#-add-integral---)
+* [Event statistics](#event-statistics)
+  * [Amplitude, baseline and latency](#amplitude,-baseline-and-latency)
+  * [Normalized amplitude](#normalized-amplitude)
+  * [Decay](#decay)
+  * [Integral](#integral)
 
 # Introduction
 
@@ -69,9 +69,10 @@ import synappy
 files = ['ex_file_1.abf', 'ex_file_2.abf']
 d = syn.load(files, input_channel=0, stimulus_channel=2)
 ```
-Note that `files` can be thought of as a dataset (for example, a
+Here, `files` can be thought of as a dataset (for example, a
 related group of files with the same parameters for stimulation or
-drug infusion.) Also note that if needed, we can specify the signal
+drug infusion.) They're all quantified together.
+Also note that if needed, we can specify the signal
 channel number and stimulus trigger channel number.
 (If no arguments are provided, these default to first and last
 channels, respectively.)
@@ -136,18 +137,19 @@ attributes within the class instance. Taking `.ampli`as an example:
 	max post-stimulus time to search for the maximum event amplitude.
 
 
-# Event quantification
+# Event statistics
 
 Here, we detail all the class methods available for measuring and
 quantifying synaptic events.
 
-All class methods are fully documented (`help(d.method)`).
+All class methods are fully documented (`help(d.example_method)`).
 
-## `.add_ampli()`
-Computes pre-event baseline values, event amplitudes,
+## Amplitude, baseline and latency
+* `.add_ampli()`.
+* Computes pre-event baseline values, event amplitudes,
 and event latencies (computed in a number of ways).
 	
-This requires a self.events attribute, created by calling
+* This requires a self.events attribute, created by calling
 the method `self.add_events()`. For each stimulus, a baseline
 signal is calculated between `t_baseline_lower` and
 `t_baseline_upper` before the stimulus onset. Next, a
@@ -155,7 +157,7 @@ maximum event amplitude is calculated. Finally, the event
 latency (time to the peak amplitude, or alternately
 other latency metrics) is computed.
 
-These values are stored as the following attributes in the
+* These values are stored as the following attributes in the
 EphysObject instance:
 	.ampli
 	.baseline
@@ -202,46 +204,47 @@ EphysObject instance:
 		to rise.)
 
 ### Attributes added to class instance
-* `.ampli` : SimpleNamespace
-	* `.ampli.data[neuron][trial, event]`
+* `.ampli`
+	* `.ampli.data[neuron][trial, event]`:
 	Baseline-subtracted maximum amplitude data
 	(in pA or mV).
-	* `.ampli.inds[neuron][trial, event]`
+	* `.ampli.inds[neuron][trial, event]`:
 	Indices in .sig of maximum amplitudes.
-	* `.ampli.params`
+	* `.ampli.params`:
 	SimpleNamespace storing key params from `.add_ampli()` method
 	related to amplitude.
-* `.baseline` : SimpleNamespace
-	* `.baseline.mean[neuron][trial, event]`
+* `.baseline`
+	* `.baseline.mean[neuron][trial, event]`:
 	Mean baseline values (in pA or mV).
-	* `.baseline.std[neuron][trial, event]`
+	* `.baseline.std[neuron][trial, event]`:
 	Standard deviation of baseline values (in pA or mV).
-	* `.baseline.inds_start[neuron][trial, event]`
+	* `.baseline.inds_start[neuron][trial, event]`:
 	Indices of the start of baseline period in .sig
-    * `.baseline.inds_stop[neuron][trial, event]`
+    * `.baseline.inds_stop[neuron][trial, event]`:
 	Indices of the end of baseline period in .sig
-	* `.baseline.params`
+	* `.baseline.params`:
 	SimpleNamespace storing key params from `.add_ampli()` method
 	related to baseline.
-* `.latency` : SimpleNamespace
-	* `.latency.data[neuron][trial, event]`
+* `.latency`
+	* `.latency.data[neuron][trial, event]`:
 	Event latency from stimulus onset (sec).
-	* `.latency.inds[neuron][trial, event]`
+	* `.latency.inds[neuron][trial, event]`:
 	Indices in .sig of event latency.
-	* `.latency.params`
+	* `.latency.params`:
 	SimpleNamespace storing key params from .add_ampli() method
 	related to latency.
 
 
-## `.add_ampli_norm()`
-Adds normalized amplitude measurement to the class instance as
+## Normalized amplitude
+* `.add_ampli_norm()`.
+* Adds normalized amplitude measurement to the class instance as
 .ampli_norm. Amplitudes are normalized to the mean ampli for each
 stimulus delivered to each neuron.
 
 (.ampli must be an existing attribute, through the .add_ampli() method.)
 
 ### Attributes added to class instance
-* `self.ampli` : SimpleNamespace
+* `self.ampli`
 	* `.ampli_norm.data[neuron][trial, event]`
 	Baseline-subtracted normalized max amplitude data
 	(in pA or mV).
@@ -249,28 +252,29 @@ stimulus delivered to each neuron.
 	Indices in .sig of normalized max amplitudes.
 	
 	
-## `.add_decay()`
-Fits each post-synaptic event with an exponential decay fuction
+## Decay
+* `.add_decay()`.
+* Fits each post-synaptic event with an exponential decay fuction
 and stores the fitted parameters in self.decay.
 
-Decay equation variables correspond to the fitted variables for
+* Decay equation variables correspond to the fitted variables for
 the equation used (see the kwarg fn for more info).
 - monoexponential decay: lambda1, b.
 - biexponential decay: lambda1, lambda2, vstart2, b.
 
 ### Parameters
-* `t_prestim` : float
+* `t_prestim`:
 	Time before stimulus, in ms, to include in signal
 	used to compute decay.
 
-* `t_poststim` : float
+* `t_poststim`:
 	Time after stimulus, in ms, to include in signal
 	used to compute decay.
 
-* `plotting` : bool
+* `plotting`:
 	Whether to plot examples of decay fits (True) or not (False).
 
-* `fn` : str
+* `fn`:
 	Exponential decay function to use.
 	- 'monoexp': y = e^(-t * lambda1) + b
 	- 'biexp_normalized_plusb': y = e^(-t * lambda1)
@@ -300,27 +304,26 @@ the equation used (see the kwarg fn for more info).
 	Parameters related to the decay fitting.
 	
 	
-## `.add_integral()`
-Computes the integral for each post-synaptic event.
+## Integral
+* `.add_integral()`.
+* Computes the integral for each post-synaptic event.
 
 ### Parameters
-* `t_integral` : float
-	The total post-stimulus time to integrate, in milliseconds.
+* `t_integral`: The total post-stimulus time to integrate, in milliseconds.
 
-* `cdf_bins` : int
-	Number of bins for the cumulative integral
+* `cdf_bins`: Number of bins for the cumulative integral
 
 ### Attributes added
-* `.integral` : SimpleNamespace
-	* `.integral.data[neuron][trial, event]`
+* `.integral`
+	* `.integral.data[neuron][trial, event]`:
 	Integral values for each event (in pA*sec or mV*sec).
-	* `.integral.inds_start[neuron][trial, event]`
+	* `.integral.inds_start[neuron][trial, event]`:
 	Indices of the start of integral period in .sig
-	* `.integral.inds_stop[neuron][trial, event]`
+	* `.integral.inds_stop[neuron][trial, event]`:
 	Indices of the end of integral period in .sig
-	* `.integral.cdf[neuron][trial, event]`
+	* `.integral.cdf[neuron][trial, event]`:
 	Cumulative distribution of the integral over time
 	for each event.
-	* `.integral.params`
+	* `.integral.params`:
 	SimpleNamespace storing key params from .add_integral() method
 	related to integral.
