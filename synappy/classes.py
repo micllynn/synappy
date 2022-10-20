@@ -1,4 +1,4 @@
-# imports
+f# imports
 from .core_fns import find_spontaneous_events, find_stim_events
 from .helper_fns import find_last, _get_median_filtered
 import numpy as np
@@ -106,11 +106,86 @@ class EphysObject(object):
 
         return
 
+    def add_event_times(self, t_events, neur='all'):
+        """
+        Manually specify a list of event times and add them to
+        an EphysObject instance. Used by methods to quantify stimulus-triggered
+        event statistics.
+
+        Stores results in self.events, which has the format:
+            events[neuron][trial][event_index]
+
+        Parameters
+        -------------
+        t_events : list
+            A list of event times.
+
+        neur : 'all' or int
+            If neur is 'all', then all neurons are updated with a shared set
+            of event times specified by t_events.
+            If neur is int, then only neur is updated with these times.
+
+        Example
+        ------------
+        Example 1: all neurons
+        >>> d = syn.load(['ex_file.abf'])
+        >>> d.add_event_times(t_events=[0.1, 0.2, 0.5], neur='all')
+
+        >>> d = syn.load(['ex_file.abf'])
+        >>> d.add_event_times(t_events=[0.5, 0.7, 0.8], neur=2)
+
+        Attributes added to class instance
+        ------------
+        self.events : np.ndarray
+            An array of event onset indices
+            for each neuron.
+            Indices correspond to the .sig or .t attributes.
+        """
+        self.event_type = 'stim'
+
+        n_neurs = len(self.sig)
+        self.events = np.empty(n_neurs, dtype=np.ndarray)
+
+        if neur == 'all':
+            for neur in range(n_neurs):
+                # convert from t to inds
+                _ind_events = np.empty_like(t_events, dtype=np.int)
+                for ind, t_event in enumerate(t_events):
+                    _ind_events[ind] = self._from_t_to_ind(t_event, neur,
+                                                           t_format='s')
+                # update self.events
+                n_trials = self.sig[neur].shape[0]
+                self.events[neur] = np.empty(n_trials, dtype=np.ndarray)
+                for trial in range(n_trials):
+                    self.events[neur][trial] = _ind_events
+
+        elif type(neur) == int:
+            # convert from t to inds
+            _ind_events = np.empty_like(t_events, dtype=np.int)
+            for ind, t_event in enumerate(t_events):
+                _ind_events[ind] = self._from_t_to_ind(t_event, neur,
+                                                       t_format='s')
+            # update self.events
+            n_trials = self.sig[neur].shape[0]
+            self.events[neur] = np.empty(n_trials, dtype=np.ndarray)
+            for trial in range(n_trials):
+                self.events[neur][trial] = _ind_events
+
+        return
+
+    def remove_events(self, neur, event_inds):
+        n_trials = len(self.events[neur])
+        for trial in range(n_trials):
+            self.events[neur][trial] = np.delete(self.events[neur][trial],
+                                                 event_inds)
+        return
+
     def add_ampli(self, event_sign='pos',
                   t_baseline_lower=20, t_baseline_upper=0.2,
                   t_event_lower=5, t_event_upper=30,
                   t_savgol_filt=2,
-                  latency_method='max_ampli'):
+                  latency_method='max_ampli',
+                  x_sd=0):
         """
         Computes pre-event baseline values, event amplitudes,
         and event latencies (computed in a number of ways).
@@ -163,6 +238,8 @@ class EphysObject(object):
             - 'max_slope': Time from stimulus to maximum first deriv.
             - 'baseline_plus_4sd': Time from stimulus to time where
                 signal exceeds baseline levels + 4 standard deviations.
+            - 'baseline_plus_x_sd' : Time from stimulus to time where signal
+                exceeds baseline + x sd.
             - '80_20_line': Computes the times where the signal reaches 20%
                 and 80% of the maximum amplitude, then draws a straight line
                 between these and determines where this line first intersects
@@ -382,7 +459,36 @@ class EphysObject(object):
                             = _ind_lat + _sig_event_ind_start
                         self.latency.data[neuron][trial, event] \
                             = self.t[neuron][
-                                _ind_lat - _sig_event_ind_start]
+                                _ind_lat + _sig_event_ind_start] \
+                            - self.t[neuron][_sig_event_ind_start]
+
+                    elif latency_method == 'baseline_plus_x_sd':
+                        # calc
+                        if self.event_sign == 'pos':
+                            _thresh = self.baseline.mean[neuron][trial, event]\
+                                + x_sd * self.baseline.std[neuron][
+                                    trial, event]
+                        elif self.event_sign == 'neg':
+                            _thresh = self.baseline.mean[neuron][trial, event]\
+                                - x_sd * self.baseline.std[neuron][
+                                    trial, event]
+                        try:
+                            if self.event_sign == 'pos':
+                                _ind_lat = np.where(
+                                    _sig_event_filt > _thresh)[0][0]
+                            if self.event_sign == 'neg':
+                                _ind_lat = np.where(
+                                    _sig_event_filt < _thresh)[0][0]
+                        except IndexError:  # If no crossings are found (fail)
+                            _ind_lat = 0
+
+                        # store
+                        self.latency.inds[neuron][trial, event] \
+                            = _ind_lat + _sig_event_ind_start
+                        self.latency.data[neuron][trial, event] \
+                            = self.t[neuron][
+                                _ind_lat + _sig_event_ind_start] \
+                            - self.t[neuron][_sig_event_ind_start]
 
                     elif latency_method == '80_20_line':
                         # calc
@@ -447,7 +553,8 @@ class EphysObject(object):
                             = _ind_lat + _sig_event_ind_start
                         self.latency.data[neuron][trial, event] \
                             = self.t[neuron][
-                                _ind_lat - _sig_event_ind_start]
+                                _ind_lat + _sig_event_ind_start] \
+                            - self.t[neuron][_sig_event_ind_start]
 
                     else:
                         raise Exception('The specified latency_method ' +
@@ -555,9 +662,10 @@ class EphysObject(object):
         if thresh is False:
             dynamic_thresholding = True
         elif type(thresh) == list:
-            pass
+            dynamic_thresholding = False
         elif type(thresh) == float or type(thresh) == int:
-            thresh = np.one(n_neurons) * thresh
+            dynamic_thresholding = False
+            thresh = np.ones(n_neurons) * thresh
 
         for neuron in range(n_neurons):
             # compare threshold with amplitudes to make mask
@@ -1215,6 +1323,78 @@ class EphysObject(object):
 
                 plt.show()
 
+    def filter_sig_savgol(self, t_savgol_filt=1, polyorder=3):
+        """Applies a specified filter to the raw signal for all
+        neurons. (Reccommended to call this method before adding
+        ampli, etc.)
+
+        Parameters
+        ---------------
+        t_savgol_filt : float
+            Window length of savgol filter, in seconds.
+
+        polyorder : int
+            Polynomial order for savgol filter.
+
+        Attributes added
+        -------------
+        self.sig : filtered signal
+        """
+        print(f'Filtering signal...')
+
+        n_neurs = len(self.sig)
+        for neur in range(n_neurs):
+            print(f'\tNeuron {neur}')
+            ind_savgol_filt = self._from_t_to_ind(t_savgol_filt,
+                                                  neur,
+                                                  t_format='s') + 1
+            n_trials = self.sig[neur].shape[0]
+
+            for trial in range(n_trials):
+                _sig = self.sig[neur][trial, :]
+                _sig_filt = sp_signal.savgol_filter(_sig,
+                                                    ind_savgol_filt,
+                                                    polyorder=polyorder)
+                self.sig[neur][trial, :] = _sig_filt
+            
+        return
+
+    def filter_sig_butterworth(self, butter_n, butter_wn):
+        """Applies a specified filter to the raw signal for all
+        neurons. (Reccommended to call this method before adding
+        ampli, etc.)
+
+        Parameters
+        ---------------
+        butter_n : int
+            Order of the butterworth filter
+        butter_wn : float
+            Critical frequency, expressed as fraction of the Nyquist frequency.
+
+        Attributes added
+        -------------
+        self.sig : filtered signal
+        self._sig_raw : original unfiltered signal for reference
+        """
+        self._sig_raw = self.sig
+
+        print('Filtering signal...')
+
+        n_neurs = len(self.sig)
+        for neur in range(n_neurs):
+            print(f'\tNeuron {neur}')
+            n_trials = self.sig[neur].shape[0]
+            for trial in range(n_trials):
+                sos = sp_signal.butter(butter_n, butter_wn, output='sos')
+                _sig = self.sig[neur][trial, :]
+                _sig_filt = sp_signal.sosfiltfilt(sos, _sig)
+                self.sig[neur][trial, :] = _sig_filt
+
+        print(f'added .sig (Butterworth filter applied: order {butter_n} and '
+              f'critical frequency {butter_wn} of Nyquist)')
+
+        return
+
     def mask_unclamped_aps(self, thresh=5):
         """Removes unclamped action potentials from a voltage-clamp recording
         by masking the appropriate entries in the self.ampli, self.latency and
@@ -1387,6 +1567,7 @@ class EphysObject(object):
 class PreviewEphysObject(object):
     def __init__(self, ephysobj, neur,
                  attrs=None,
+                 plt_sig_raw=False,
                  figsize=(10, 7),
                  _color_reg=[0.65, 0.65, 0.65],
                  _color_bold=[0.0118, 0.443, 0.612],
@@ -1416,6 +1597,12 @@ class PreviewEphysObject(object):
                 'baseline'
                 'decay'
                 'integral'
+
+        plt_sig_raw : bool
+            Whether to plot the original signal or not. Only applies if a
+            filtered signal has been calculated using .filter_sig_* to replace
+            .sig. This argument then plots ._sig_raw as well as the
+            filtered .sig.
         """
         # Load data and initialize variables
         self._color_reg = _color_reg

@@ -88,13 +88,14 @@ def load(fnames, trials=None, input_channel=None, stim_channel=None,
             seg_index=0,
             channel_indexes=[_in_ch]).shape[0]
         syn_obj._sampling_rate[neuron] = reader.get_signal_sampling_rate()
-        _t_interv = 1 / syn_obj._sampling_rate
+        _t_interv = 1 / syn_obj._sampling_rate[neuron]
         _t_stop = _t_interv * n_samples
         syn_obj.t[neuron] = np.arange(0, _t_stop, _t_interv)
 
         # setup trials if not initialized
         if trials is not None:
-            _trials = np.arange(trials[neuron][0], trials[neuron]+1)
+            _trials = np.arange(trials[neuron][0],
+                                trials[neuron][1]+1)
         elif trials is None:
             _trials = np.arange(n_trials_in_rec)
         n_trials = len(_trials)
@@ -112,16 +113,16 @@ def load(fnames, trials=None, input_channel=None, stim_channel=None,
 
         # store analog signal
         syn_obj.sig[neuron] = np.empty((n_trials, n_samples))
-        for trial in _trials:
+        for rel_trial, abs_trial in enumerate(_trials):
             _raw_sig = reader.get_analogsignal_chunk(
                 block_index=0,
-                seg_index=trial,
+                seg_index=abs_trial,
                 channel_indexes=[_in_ch])
             _float_sig = reader.rescale_signal_raw_to_float(
                 _raw_sig,
                 dtype='float64',
                 channel_indexes=[_in_ch])[:, 0]
-            syn_obj.sig[neuron][trial, :] = _float_sig
+            syn_obj.sig[neuron][rel_trial, :] = _float_sig
             syn_obj.sig_units = reader.header['signal_channels'][
                 _in_ch]['units']
 
@@ -130,7 +131,7 @@ def load(fnames, trials=None, input_channel=None, stim_channel=None,
             print(f'\tfile {fnames[neuron]}:')
             print(f'\t\ttrials: {n_trials}')
             print(f'\t\tunits: {syn_obj.sig_units}')
-            print(f'\t\tdur: {_t_stop[0]}s')
+            print(f'\t\tdur: {_t_stop}s')
 
     if verbose is True:
         print('Added .sig \nAdded .sig_stim \nAdded .t')

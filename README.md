@@ -61,13 +61,13 @@ can be taken.
 ![preview-ex](/imgs/preview_ex.png)
 
 ## Detecting and quantifying events
-To work with synaptic events, we first need to import the associated
-files.
+To work with synaptic events, we first need to import
+some files.
 ```python
 import synappy
 
 files = ['ex_file_1.abf', 'ex_file_2.abf']
-d = syn.load(files, input_channel=0, stimulus_channel=2)
+d = syn.load(files, input_channel=0, stim_channel=2)
 ```
 Here, `files` can be thought of as a dataset (for example, a
 related group of files with the same parameters for stimulation or
@@ -88,10 +88,13 @@ following class attributes:
 
 Next, we add stimulus-triggered events.
 ```python
-d.add_events()
+d.add_events(stim_thresh=5)
 ```
 This searches the stimulus channel provided for any pulses, and adds
 these locations as event onsets.
+
+Note that the stimulus threshold can be specified (`stim_thresh`), and
+may need to be altered if the stimulus channel is incorrectly scaled.
 
 Most event statistics can then be added using specific class methods,
 described in detail below. Here, we first add the simplest event
@@ -106,8 +109,11 @@ events), after the stimulus trigger.
 A convenient library of general event statistics, including event decay
 and integral, can be added with the following command:
 ```python
-d.add_all(event_sign='pos')
+d.add_all(kwargs_add_ampli={'event_sign': 'neg'})
 ```
+Note that a dictionary of keywords for each method can be provided, which
+are passed to the appropriate method (`kwargs_add_ampli`, `kwargs_add_decay`,
+`kwargs_add_integral`).
 
 ## Visualizing event statistics
 Most event statistics can be overlaid with the recorded signal in a
@@ -116,14 +122,11 @@ single plot for convenient quality control.
 d.preview(neur=0, attrs=['ampli', 'baseline'])
 ```
 Here, we've specified a neuron to preview, as well as a list of attributes
-(event statistics) to annotate, typically as colored dots overlaid with the
-trace. Note that these can be any attributes shown in the verbose printing
-from class methods.
-
+(event statistics) to annotate. 
 
 
 ## Retrieving values
-All event statistics (eg amplitude, etc.) are stored in a logical format as
+The values for each statistic (eg amplitude, etc.) is stored as
 attributes within the class instance. Taking `.ampli`as an example:
 
 * `d.ampli.data[neuron][trial, event]`
@@ -135,7 +138,6 @@ attributes within the class instance. Taking `.ampli`as an example:
   * Parameters related to the kwargs specified for the associated class
 	method. (For example, `d.ampli.params.t_event_upper` specifies the
 	max post-stimulus time to search for the maximum event amplitude.
-
 
 # Event statistics
 
