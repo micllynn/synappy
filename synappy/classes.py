@@ -1,4 +1,4 @@
-f# imports
+# imports
 from .core_fns import find_spontaneous_events, find_stim_events
 from .helper_fns import find_last, _get_median_filtered
 import numpy as np
